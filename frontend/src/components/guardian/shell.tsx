@@ -1,3 +1,4 @@
+import { ClerkUserAvatar } from './clerk-auth';
 import { useState, useEffect, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from '@tanstack/react-router';
 import {
@@ -432,6 +433,8 @@ export function GuardianShell({ children }: { children: ReactNode }) {
             <Bell size={18} />
             {!notificationsRead && <span className="topbar-dot-badge" />}
           </Button>
+
+          <ClerkUserAvatar />
 
           <Button
             variant="ghost"

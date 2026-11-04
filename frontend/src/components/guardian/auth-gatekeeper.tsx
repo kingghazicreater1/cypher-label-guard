@@ -1,3 +1,4 @@
+import { ClerkGatekeeperCard, isClerkConfigured } from './clerk-auth';
 import { useState } from 'react';
 import {
   ShieldCheck,
@@ -40,7 +41,7 @@ interface AuthGatekeeperProps {
 }
 
 export function AuthGatekeeper({ onAuthenticated, onGuestBypass }: AuthGatekeeperProps) {
-  const [tab, setTab] = useState<'otp' | 'login' | 'signup'>('otp');
+  const [tab, setTab] = useState<'clerk' | 'otp' | 'login' | 'signup'>(isClerkConfigured ? 'clerk' : 'otp');
 
   // Email OTP state
   const [emailInput, setEmailInput] = useState('kingghazi123580@gmail.com');
@@ -308,7 +309,19 @@ export function AuthGatekeeper({ onAuthenticated, onGuestBypass }: AuthGatekeepe
           </div>
 
           {/* Mode Tabs */}
-          <div className="grid grid-cols-3 gap-1 bg-[#060b08] p-1 rounded-xl border border-emerald-900/50 mb-6">
+          <div className="grid grid-cols-4 gap-1 bg-[#060b08] p-1 rounded-xl border border-emerald-900/50 mb-6">
+            <button
+              type="button"
+              onClick={() => setTab('clerk')}
+              className={`text-xs py-2 px-1 rounded-lg font-medium transition-all flex items-center justify-center gap-1 ${
+                tab === 'clerk'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-700/40'
+                  : 'text-emerald-400/70 hover:text-emerald-200'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+              <span>Clerk.com</span>
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -349,6 +362,17 @@ export function AuthGatekeeper({ onAuthenticated, onGuestBypass }: AuthGatekeepe
               <span>Register</span>
             </button>
           </div>
+
+          {/* TAB 0: CLERK.COM AUTHENTICATION */}
+          {tab === 'clerk' && (
+            <div className="space-y-4">
+              <ClerkGatekeeperCard
+                onSuccess={(profile) => {
+                  onAuthenticated(profile);
+                }}
+              />
+            </div>
+          )}
 
           {/* TAB 1: EMAIL OTP (Default & Recommended) */}
           {tab === 'otp' && (

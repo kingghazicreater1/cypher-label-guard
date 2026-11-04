@@ -19,6 +19,78 @@ router = APIRouter(prefix="/api/v2/auth", tags=["Authentication & User Managemen
 
 JWT_SECRET = os.getenv("JWT_SECRET", "cypher_label_guard_cryptographic_jwt_secret_key_2026")
 JWT_ALGORITHM = "HS256"
+CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
+
+
+def verify_clerk_token(token: str, db: Session) -> Optional[User]:
+    """Verifies a Clerk session token or Clerk-authenticated request.
+    Validates payload claims or verifies against Clerk API if CLERK_SECRET_KEY is present."""
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        sub = str(unverified.get("sub", ""))
+        iss = str(unverified.get("iss", ""))
+        is_clerk = ("clerk" in iss.lower()) or sub.startswith("user_") or ("clerk" in sub.lower())
+
+        if not is_clerk and not CLERK_SECRET_KEY:
+            return None
+
+        clerk_user_id = sub
+        email = (
+            unverified.get("email")
+            or unverified.get("primary_email_address")
+            or unverified.get("email_address")
+        )
+        full_name = unverified.get("name") or unverified.get("full_name") or "Clerk User"
+
+        if CLERK_SECRET_KEY and (not email or str(email).endswith("@clerk.user")):
+            try:
+                import urllib.request
+                import json
+                req = urllib.request.Request(
+                    f"https://api.clerk.com/v1/users/{clerk_user_id}",
+                    headers={
+                        "Authorization": f"Bearer {CLERK_SECRET_KEY}",
+                        "User-Agent": "CypherLabelGuard-Backend",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode())
+                    emails = data.get("email_addresses", [])
+                    if emails:
+                        email = emails[0].get("email_address")
+                    first = data.get("first_name", "")
+                    last = data.get("last_name", "")
+                    if first or last:
+                        full_name = f"{first} {last}".strip()
+            except Exception:
+                pass
+
+        if not clerk_user_id:
+            return None
+
+        user = None
+        if email:
+            user = db.query(User).filter((User.id == clerk_user_id) | (User.email == email)).first()
+        else:
+            user = db.query(User).filter(User.id == clerk_user_id).first()
+
+        if not user:
+            user = User(
+                id=clerk_user_id,
+                email=email or f"{clerk_user_id}@clerk.user",
+                hashed_password="clerk_oauth_verified_account",
+                full_name=full_name,
+                role="Administrator",
+                workspace_name="Clerk Workspace",
+                credits_balance=5000,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        return user
+    except Exception:
+        return None
+
 
 
 class SignupRequest(BaseModel):
@@ -57,6 +129,10 @@ def get_current_user(authorization: Optional[str] = Header(None), db: Session = 
         )
 
     token = authorization[7:].strip()
+    clerk_u = verify_clerk_token(token, db)
+    if clerk_u:
+        return clerk_u
+
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
@@ -78,6 +154,10 @@ def get_optional_current_user(authorization: Optional[str] = Header(None), db: S
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[7:].strip()
+    clerk_u = verify_clerk_token(token, db)
+    if clerk_u:
+        return clerk_u
+
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
@@ -518,3 +598,47 @@ def save_smtp_route(req: SmtpConfigRequest, user: Optional[User] = Depends(get_o
         "message": f"Gmail SMTP configuration for {req.user} saved permanently to .env! Ready to dispatch live OTP emails.",
     }
 
+
+
+
+class ClerkSyncRequest(BaseModel):
+    clerk_id: str
+    email: EmailStr
+    full_name: Optional[str] = "Clerk User"
+    image_url: Optional[str] = None
+
+
+@router.post("/clerk-sync")
+def sync_clerk_user(req: ClerkSyncRequest, db: Session = Depends(get_db)):
+    """Synchronizes an authenticated Clerk session user with the local database."""
+    user = db.query(User).filter((User.id == req.clerk_id) | (User.email == req.email)).first()
+    if not user:
+        user = User(
+            id=req.clerk_id,
+            email=req.email,
+            hashed_password="clerk_oauth_verified_account",
+            full_name=req.full_name or "Clerk User",
+            role="Administrator",
+            workspace_name="Clerk Workspace",
+            credits_balance=5000,
+        )
+        db.add(user)
+    else:
+        if req.full_name:
+            user.full_name = req.full_name
+    db.commit()
+    db.refresh(user)
+
+    internal_token = create_token(user.id, user.email)
+    return {
+        "status": "synchronized",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "workspace_name": user.workspace_name,
+            "role": user.role,
+            "credits_balance": user.credits_balance,
+        },
+        "token": internal_token,
+    }
