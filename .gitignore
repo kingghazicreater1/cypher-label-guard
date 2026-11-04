@@ -1,0 +1,82 @@
+# ==============================================================================
+# Git Ignore Rules for CypherLabelGuard / AV GUARDIAN
+# ==============================================================================
+
+# Critical Security: NEVER commit environment or secrets
+.env
+*.env
+.env.*
+.dev.vars
+!.env.example
+
+# Databases & Local SQLite Storage
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python Bytecode & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+env/
+ENV/
+
+# Node.js & Frontend Artifacts
+node_modules/
+frontend/node_modules/
+dist/
+dist-ssr/
+.output/
+frontend/.output/
+.vinxi/
+.tanstack/**
+.nitro/
+.wrangler/
+*.local
+
+# Legacy Backup Directories
+frontend_backup_v1/
+frontend_backup_v2/
+
+# Scratch & Browser Automation Temporary Storage
+scratch/chrome-data/
+scratch/__pycache__/
+
+# Logs & Diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.sw?
+*.suo

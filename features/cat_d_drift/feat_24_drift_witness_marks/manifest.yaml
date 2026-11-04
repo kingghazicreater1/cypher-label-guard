@@ -1,0 +1,12 @@
+id: "feat_24_drift_witness_marks"
+name: "Drift Witness Marks (Type A + B)"
+category: "CAT_D"
+version: "2.0.0"
+description: "Dual drift detection: Type A monitors external model drift, Type B triggers self-doubt anomaly alarms."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "type_a_model_drift_witness"
+    name: "Type A: External Model Drift Witness"
+  - id: "type_b_self_doubt_witness"
+    name: "Type B: Internal Self-Doubt Anomaly Alarm"

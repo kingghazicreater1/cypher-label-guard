@@ -1,0 +1,12 @@
+id: "feat_02_nshot_calibration"
+name: "N-Shot Zero Calibration"
+category: "CAT_A"
+version: "2.0.0"
+description: "Measures baseline confidence distributions before the first inference pass to neutralize model bias."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "baseline_scale_normalizer"
+    name: "Baseline Scale Normalizer"
+  - id: "prior_distribution_anchor"
+    name: "Prior Distribution Anchor"

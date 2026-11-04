@@ -1,0 +1,51 @@
+SKU,Product_Title,Category,Ground_Truth_Quality,Expected_Tier,Description
+AVG-BENCH-10001,Footwear Item #1 (High Tier),Footwear,No Defect,High,"Genuine Italian leather Chelsea boots, pristine finish with reinforced rubber sole. (Serial #AVG-BENCH-10001-QC)."
+AVG-BENCH-10002,Footwear Item #2 (High Tier),Footwear,Defective,High,"Right heel seam detached upon opening box, major adhesive failure and torn leather. (Serial #AVG-BENCH-10002-QC)."
+AVG-BENCH-10003,Electronics Item #3 (Premium Tier),Electronics,No Defect,Premium,"Anodized aluminum wireless noise-cancelling headphones, perfect acoustic response and zero hiss. (Serial #AVG-BENCH-10003-QC)."
+AVG-BENCH-10004,Electronics Item #4 (Premium Tier),Electronics,Defective,Premium,"Left ear cup audio completely dead out of the box, crackling sound and burnt wire smell. (Serial #AVG-BENCH-10004-QC)."
+AVG-BENCH-10005,Apparel Item #5 (Standard Tier),Apparel,No Defect,Standard,"Organic cotton crewneck sweatshirt, double-needle stitching and color-fast dye. (Serial #AVG-BENCH-10005-QC)."
+AVG-BENCH-10006,Apparel Item #6 (Standard Tier),Apparel,Defective,Standard,"Large 4-inch oil stain on front chest panel, loose thread hanging from sleeve collar. (Serial #AVG-BENCH-10006-QC)."
+AVG-BENCH-10007,Electronics Item #7 (Mid Tier),Electronics,No Defect,Mid,"High-speed NVMe 2TB PCIe 4.0 SSD, verified sequential read speed 7,200 MB/s, sealed blister pack. (Serial #AVG-BENCH-10007-QC)."
+AVG-BENCH-10008,Electronics Item #8 (Mid Tier),Electronics,Defective,Mid,Drive fails SMART self-test with 48 reallocated bad sectors immediately upon connection. (Serial #AVG-BENCH-10008-QC).
+AVG-BENCH-10009,Luggage Item #9 (Mid Tier),Luggage,No Defect,Mid,Polycarbonate hardshell 28-inch check-in suitcase with 360-degree silent spinner wheels. (Serial #AVG-BENCH-10009-QC).
+AVG-BENCH-10010,Luggage Item #10 (Mid Tier),Luggage,Defective,Mid,"Main zipper teeth broken and misaligned on first zip, lock mechanism jammed shut. (Serial #AVG-BENCH-10010-QC)."
+AVG-BENCH-10011,Footwear Item #11 (High Tier),Footwear,No Defect,High,"Genuine Italian leather Chelsea boots, pristine finish with reinforced rubber sole. (Serial #AVG-BENCH-10011-QC)."
+AVG-BENCH-10012,Footwear Item #12 (High Tier),Footwear,Defective,High,"Right heel seam detached upon opening box, major adhesive failure and torn leather. (Serial #AVG-BENCH-10012-QC)."
+AVG-BENCH-10013,Electronics Item #13 (Premium Tier),Electronics,No Defect,Premium,"Anodized aluminum wireless noise-cancelling headphones, perfect acoustic response and zero hiss. (Serial #AVG-BENCH-10013-QC)."
+AVG-BENCH-10014,Electronics Item #14 (Premium Tier),Electronics,Defective,Premium,"Left ear cup audio completely dead out of the box, crackling sound and burnt wire smell. (Serial #AVG-BENCH-10014-QC)."
+AVG-BENCH-10015,Apparel Item #15 (Standard Tier),Apparel,No Defect,Standard,"Organic cotton crewneck sweatshirt, double-needle stitching and color-fast dye. (Serial #AVG-BENCH-10015-QC)."
+AVG-BENCH-10016,Apparel Item #16 (Standard Tier),Apparel,Defective,Standard,"Large 4-inch oil stain on front chest panel, loose thread hanging from sleeve collar. (Serial #AVG-BENCH-10016-QC)."
+AVG-BENCH-10017,Electronics Item #17 (Mid Tier),Electronics,No Defect,Mid,"High-speed NVMe 2TB PCIe 4.0 SSD, verified sequential read speed 7,200 MB/s, sealed blister pack. (Serial #AVG-BENCH-10017-QC)."
+AVG-BENCH-10018,Electronics Item #18 (Mid Tier),Electronics,Defective,Mid,Drive fails SMART self-test with 48 reallocated bad sectors immediately upon connection. (Serial #AVG-BENCH-10018-QC).
+AVG-BENCH-10019,Luggage Item #19 (Mid Tier),Luggage,No Defect,Mid,Polycarbonate hardshell 28-inch check-in suitcase with 360-degree silent spinner wheels. (Serial #AVG-BENCH-10019-QC).
+AVG-BENCH-10020,Luggage Item #20 (Mid Tier),Luggage,Defective,Mid,"Main zipper teeth broken and misaligned on first zip, lock mechanism jammed shut. (Serial #AVG-BENCH-10020-QC)."
+AVG-BENCH-10021,Footwear Item #21 (High Tier),Footwear,No Defect,High,"Genuine Italian leather Chelsea boots, pristine finish with reinforced rubber sole. (Serial #AVG-BENCH-10021-QC)."
+AVG-BENCH-10022,Footwear Item #22 (High Tier),Footwear,Defective,High,"Right heel seam detached upon opening box, major adhesive failure and torn leather. (Serial #AVG-BENCH-10022-QC)."
+AVG-BENCH-10023,Electronics Item #23 (Premium Tier),Electronics,No Defect,Premium,"Anodized aluminum wireless noise-cancelling headphones, perfect acoustic response and zero hiss. (Serial #AVG-BENCH-10023-QC)."
+AVG-BENCH-10024,Electronics Item #24 (Premium Tier),Electronics,Defective,Premium,"Left ear cup audio completely dead out of the box, crackling sound and burnt wire smell. (Serial #AVG-BENCH-10024-QC)."
+AVG-BENCH-10025,Apparel Item #25 (Standard Tier),Apparel,No Defect,Standard,"Organic cotton crewneck sweatshirt, double-needle stitching and color-fast dye. (Serial #AVG-BENCH-10025-QC)."
+AVG-BENCH-10026,Apparel Item #26 (Standard Tier),Apparel,Defective,Standard,"Large 4-inch oil stain on front chest panel, loose thread hanging from sleeve collar. (Serial #AVG-BENCH-10026-QC)."
+AVG-BENCH-10027,Electronics Item #27 (Mid Tier),Electronics,No Defect,Mid,"High-speed NVMe 2TB PCIe 4.0 SSD, verified sequential read speed 7,200 MB/s, sealed blister pack. (Serial #AVG-BENCH-10027-QC)."
+AVG-BENCH-10028,Electronics Item #28 (Mid Tier),Electronics,Defective,Mid,Drive fails SMART self-test with 48 reallocated bad sectors immediately upon connection. (Serial #AVG-BENCH-10028-QC).
+AVG-BENCH-10029,Luggage Item #29 (Mid Tier),Luggage,No Defect,Mid,Polycarbonate hardshell 28-inch check-in suitcase with 360-degree silent spinner wheels. (Serial #AVG-BENCH-10029-QC).
+AVG-BENCH-10030,Luggage Item #30 (Mid Tier),Luggage,Defective,Mid,"Main zipper teeth broken and misaligned on first zip, lock mechanism jammed shut. (Serial #AVG-BENCH-10030-QC)."
+AVG-BENCH-10031,Footwear Item #31 (High Tier),Footwear,No Defect,High,"Genuine Italian leather Chelsea boots, pristine finish with reinforced rubber sole. (Serial #AVG-BENCH-10031-QC)."
+AVG-BENCH-10032,Footwear Item #32 (High Tier),Footwear,Defective,High,"Right heel seam detached upon opening box, major adhesive failure and torn leather. (Serial #AVG-BENCH-10032-QC)."
+AVG-BENCH-10033,Electronics Item #33 (Premium Tier),Electronics,No Defect,Premium,"Anodized aluminum wireless noise-cancelling headphones, perfect acoustic response and zero hiss. (Serial #AVG-BENCH-10033-QC)."
+AVG-BENCH-10034,Electronics Item #34 (Premium Tier),Electronics,Defective,Premium,"Left ear cup audio completely dead out of the box, crackling sound and burnt wire smell. (Serial #AVG-BENCH-10034-QC)."
+AVG-BENCH-10035,Apparel Item #35 (Standard Tier),Apparel,No Defect,Standard,"Organic cotton crewneck sweatshirt, double-needle stitching and color-fast dye. (Serial #AVG-BENCH-10035-QC)."
+AVG-BENCH-10036,Apparel Item #36 (Standard Tier),Apparel,Defective,Standard,"Large 4-inch oil stain on front chest panel, loose thread hanging from sleeve collar. (Serial #AVG-BENCH-10036-QC)."
+AVG-BENCH-10037,Electronics Item #37 (Mid Tier),Electronics,No Defect,Mid,"High-speed NVMe 2TB PCIe 4.0 SSD, verified sequential read speed 7,200 MB/s, sealed blister pack. (Serial #AVG-BENCH-10037-QC)."
+AVG-BENCH-10038,Electronics Item #38 (Mid Tier),Electronics,Defective,Mid,Drive fails SMART self-test with 48 reallocated bad sectors immediately upon connection. (Serial #AVG-BENCH-10038-QC).
+AVG-BENCH-10039,Luggage Item #39 (Mid Tier),Luggage,No Defect,Mid,Polycarbonate hardshell 28-inch check-in suitcase with 360-degree silent spinner wheels. (Serial #AVG-BENCH-10039-QC).
+AVG-BENCH-10040,Luggage Item #40 (Mid Tier),Luggage,Defective,Mid,"Main zipper teeth broken and misaligned on first zip, lock mechanism jammed shut. (Serial #AVG-BENCH-10040-QC)."
+AVG-BENCH-10041,Footwear Item #41 (High Tier),Footwear,No Defect,High,"Genuine Italian leather Chelsea boots, pristine finish with reinforced rubber sole. (Serial #AVG-BENCH-10041-QC)."
+AVG-BENCH-10042,Footwear Item #42 (High Tier),Footwear,Defective,High,"Right heel seam detached upon opening box, major adhesive failure and torn leather. (Serial #AVG-BENCH-10042-QC)."
+AVG-BENCH-10043,Electronics Item #43 (Premium Tier),Electronics,No Defect,Premium,"Anodized aluminum wireless noise-cancelling headphones, perfect acoustic response and zero hiss. (Serial #AVG-BENCH-10043-QC)."
+AVG-BENCH-10044,Electronics Item #44 (Premium Tier),Electronics,Defective,Premium,"Left ear cup audio completely dead out of the box, crackling sound and burnt wire smell. (Serial #AVG-BENCH-10044-QC)."
+AVG-BENCH-10045,Apparel Item #45 (Standard Tier),Apparel,No Defect,Standard,"Organic cotton crewneck sweatshirt, double-needle stitching and color-fast dye. (Serial #AVG-BENCH-10045-QC)."
+AVG-BENCH-10046,Apparel Item #46 (Standard Tier),Apparel,Defective,Standard,"Large 4-inch oil stain on front chest panel, loose thread hanging from sleeve collar. (Serial #AVG-BENCH-10046-QC)."
+AVG-BENCH-10047,Electronics Item #47 (Mid Tier),Electronics,No Defect,Mid,"High-speed NVMe 2TB PCIe 4.0 SSD, verified sequential read speed 7,200 MB/s, sealed blister pack. (Serial #AVG-BENCH-10047-QC)."
+AVG-BENCH-10048,Electronics Item #48 (Mid Tier),Electronics,Defective,Mid,Drive fails SMART self-test with 48 reallocated bad sectors immediately upon connection. (Serial #AVG-BENCH-10048-QC).
+AVG-BENCH-10049,Luggage Item #49 (Mid Tier),Luggage,No Defect,Mid,Polycarbonate hardshell 28-inch check-in suitcase with 360-degree silent spinner wheels. (Serial #AVG-BENCH-10049-QC).
+AVG-BENCH-10050,Luggage Item #50 (Mid Tier),Luggage,Defective,Mid,"Main zipper teeth broken and misaligned on first zip, lock mechanism jammed shut. (Serial #AVG-BENCH-10050-QC)."

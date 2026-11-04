@@ -1,0 +1,55 @@
+# ==============================================================================
+# CypherLabelGuard v2.0 — Feature Registry Toggles
+# RULE 25: All features controlled here.
+# ==============================================================================
+
+features:
+  # Category A: Inference & Accuracy (1-10)
+  feat_01_semantic_saturation: true
+  feat_02_nshot_calibration: true
+  feat_03_entropic_masking: true
+  feat_04_subspace_voting: true
+  feat_05_adaptive_dimension: true
+  feat_06_token_attribution: true
+  feat_07_vector_collapse_guard: true
+  feat_08_adversarial_sanity: true
+  feat_09_weighted_tiebreak: true
+  feat_10_roundtrip_fidelity: true
+
+  # Category B: Speed & Throughput (11-17)
+  feat_11_tiered_depth: true
+  feat_12_adaptive_timeout: true
+  feat_13_async_io: true
+  feat_14_connection_pool: true
+  feat_15_zerocopy_parser: true
+  feat_16_preallocated_memory: true
+  feat_17_multitenant: true
+
+  # Category C: Privacy & Security (18-23)
+  feat_18_zeroretention_pass: true
+  feat_19_ramonly_mmap: true
+  feat_20_echo_cancellation: true
+  feat_21_panic_salt_flush: true
+  feat_22_immutable_lineage: true
+  feat_23_stateless_embedding: true
+
+  # Category D: Lifecycle & Drift (24-27)
+  feat_24_drift_witness_marks: true
+  feat_25_epistemic_humility: true
+  feat_26_bitwise_reproducibility: true
+  feat_27_night_batch_processor: true
+
+  # Category E: Output & Human Interface (28-33)
+  feat_28_graceful_degradation: true
+  feat_29_threetier_human: true
+  feat_30_elastic_scaling: true
+  feat_31_live_dashboard: true
+  feat_32_prove_it_button: true
+  feat_33_anthropological_module: true
+
+  # Category F: Multi-Modal (34-38)
+  feat_34_multimodal_router: true
+  feat_35_vision_connector: true
+  feat_36_audio_pipeline: true
+  feat_37_video_sampler: true
+  feat_38_unified_output: true

@@ -1,0 +1,14 @@
+id: "feat_22_immutable_lineage"
+name: "Immutable Lineage Hashing"
+category: "CAT_C"
+version: "2.0.0"
+description: "Maintains tamper-proof SHA-256 hash chains across each vote, decision, and inference step."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "vote_matrix_hasher"
+    name: "Vote Matrix Hasher"
+  - id: "token_attribution_root"
+    name: "Token Attribution Root Hash"
+  - id: "tamper_seal_witness"
+    name: "Tamper Seal Witness"

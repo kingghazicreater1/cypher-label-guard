@@ -1,0 +1,16 @@
+id: "feat_11_tiered_depth"
+name: "Tiered Depth Scaling"
+category: "CAT_B"
+version: "2.0.0"
+description: "Dynamically manages Fast (2s), Standard (8s), and Deep (15-20s) execution depths with auto-escalation on anomalies."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "fast_depth_tier"
+    name: "Fast Tier (2s Budget)"
+  - id: "standard_depth_tier"
+    name: "Standard Tier (8s Budget)"
+  - id: "deep_depth_tier"
+    name: "Deep Tier (15-20s Budget)"
+  - id: "auto_escalation_engine"
+    name: "Anomaly Auto-Escalation Engine"

@@ -1,0 +1,14 @@
+id: "feat_09_weighted_tiebreak"
+name: "Contextual Weighted Tie-Break with Gated Adversarial Debate"
+category: "CAT_A"
+version: "2.1.0"
+description: "Resolves parliamentary stalemates by triggering a gated 2-round adversarial cross-examination and arbitrator verdict."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "gated_adversarial_debater"
+    name: "Gated Adversarial Cross-Examiner"
+  - id: "recency_decay_engine"
+    name: "Recency Decay Engine"
+  - id: "contextual_weight_tiebreaker"
+    name: "Contextual Weight Tie-Breaker"

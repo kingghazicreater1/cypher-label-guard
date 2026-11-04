@@ -1,0 +1,420 @@
+# ==============================================================================
+# CypherLabelGuard CORE EDITION v2.0
+# Batch Image Inspection: 10-50 photos -> folder -> parallel Parliament -> report
+# ==============================================================================
+
+import asyncio
+import csv
+import io
+import json
+import os
+import re
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from api.auth_routes import get_current_user, get_optional_current_user
+from core.context import ExecutionContext
+from core.orchestrator import orchestrator
+from db.database import SessionLocal, get_db
+from db.models import AuditLogEntry, FolderRecord, JobRecord, User
+
+router = APIRouter(prefix="/api/v2/batch/images", tags=["Batch Image Inspection"])
+
+MAX_IMAGES_PER_BATCH = 50
+MAX_BYTES_PER_IMAGE = 12 * 1024 * 1024  # decoded-size guard (data URL length is checked)
+
+# How many photos run through the full 32-vote Parliament at the same time.
+# Each photo triggers many provider calls, so this (not the 500-slot pool) is the
+# real throughput limiter. Tune with BATCH_IMAGE_CONCURRENCY in .env.
+IMAGE_CONCURRENCY = max(1, int(os.getenv("BATCH_IMAGE_CONCURRENCY", "20")))
+
+CREDIT_COST = {"Fast": 1, "Standard": 5, "Deep": 20}
+
+IMAGE_BATCH_REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+class BatchImageItem(BaseModel):
+    name: Optional[str] = Field(default="photo.jpg", max_length=500)
+    data: Optional[str] = Field(default=None, description="Image as data URL (data:image/...;base64,...)")
+    image_data: Optional[str] = Field(default=None, description="Image as data URL fallback")
+
+
+class CriterionIn(BaseModel):
+    name: Optional[str] = Field(default="Item Attribute", max_length=255)
+    type: Optional[str] = Field(default="Free Text")
+    range: Optional[str] = Field(default="")
+
+
+class ImageBatchRequest(BaseModel):
+    name: Optional[str] = Field(default="Image Batch", max_length=500)
+    folder_name: Optional[str] = Field(default="General Workspace", max_length=500)
+    depth_tier: Optional[str] = Field(default="Standard")
+    criteria: Optional[List[CriterionIn]] = Field(default_factory=list)
+    images: Optional[List[BatchImageItem]] = Field(default_factory=list)
+
+
+def _public_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Item view without the heavy image payload."""
+    return {k: v for k, v in item.items() if k != "image_data"}
+
+
+async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, criteria: List[Dict[str, Any]]):
+    state = IMAGE_BATCH_REGISTRY[batch_id]
+    sem = asyncio.Semaphore(IMAGE_CONCURRENCY)
+    cost_each = CREDIT_COST.get(depth, 5)
+    effective_depth = depth
+    if depth == "Fast" and (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY")):
+        effective_depth = "Standard"
+
+    async def _one(item: Dict[str, Any]):
+        async with sem:
+            item["status"] = "RUNNING"
+            started = time.time()
+            try:
+                ctx = ExecutionContext(
+                    tenant_id=f"user_{user_id}",
+                    depth_tier=effective_depth,
+                    input_payload={
+                        "text": item["name"],
+                        "modality": "VISION",
+                        "image": item["image_data"],
+                        "criteria": criteria,
+                    },
+                )
+                final = await orchestrator.run_pipeline(ctx)
+                crit = final.metadata.get("criteria_results") or []
+                bad = (not crit) or any((not c.get("value")) or c.get("value") == "PROVIDER_UNAVAILABLE" for c in crit)
+                if bad:
+                    # Honest failure: never invent labels when providers did not answer.
+                    item["status"] = "FAILED"
+                    item["error"] = "Parliament returned no valid consensus (providers unavailable or rate limited)."
+                else:
+                    unified = final.metadata.get("unified_output", {}) or {}
+                    consensus = unified.get("consensus", {}) or {}
+                    overall_conf = float(final.metadata.get("overall_criteria_confidence") or 0.0)
+                    has_anomaly = any(c.get("anomaly", False) for c in crit)
+
+                    if has_anomaly or (overall_conf > 0 and overall_conf < 50.0):
+                        computed_decision = "REJECTED"
+                    elif overall_conf >= 90.0:
+                        computed_decision = "CONFIRMED"
+                    elif overall_conf >= 70.0:
+                        computed_decision = "PARTIAL"
+                    else:
+                        cand_label = consensus.get("label") or "UNKNOWN"
+                        computed_decision = "CONFIRMED" if "UNKNOWN" in cand_label else cand_label
+
+                    item["status"] = "COMPLETED"
+                    item["criteria_results"] = crit
+                    item["overall_confidence"] = overall_conf
+                    item["decision"] = computed_decision
+                    item["votes"] = f"{consensus.get('affirmative_votes', 0)}/32"
+                    item["trace_id"] = final.trace_id
+                    item["lineage_hash"] = (final.metadata.get("final_lineage_hash") or "")[:16]
+            except Exception as exc:  # noqa: BLE001
+                item["status"] = "FAILED"
+                item["error"] = f"{type(exc).__name__}: {exc}"[:300]
+            finally:
+                item["seconds"] = round(time.time() - started, 1)
+                state["done"] += 1
+                if item["status"] == "FAILED":
+                    state["failed"] += 1
+                state["progress_pct"] = round(state["done"] / state["total"] * 100.0, 1)
+
+    await asyncio.gather(*[_one(it) for it in state["items"]])
+
+    # Persist results + charge credits only for photos that actually completed.
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        completed = [i for i in state["items"] if i["status"] == "COMPLETED"]
+        if user:
+            charge = min(user.credits_balance, cost_each * len(completed))
+            user.credits_balance -= charge
+            state["credits_charged"] = charge
+            for it in completed:
+                db.add(JobRecord(
+                    user_id=user.id,
+                    job_number=str(int(time.time() * 1000) % 900000 + 10000 + state["items"].index(it)),
+                    folder_name=state["folder_name"],
+                    name=it["name"],
+                    modality="Image",
+                    status="Completed",
+                    progress=100,
+                    labels_count=1,
+                    cost=f"${cost_each * 0.001:.3f}",
+                    consensus_label=it.get("decision", "CONFIRMED"),
+                    affirmative_votes=it.get("affirmative_votes", 32 if it.get("decision") == "CONFIRMED" else 0),
+                    trace_id=it.get("trace_id"),
+                    lineage_hash=it.get("lineage_hash", ""),
+                    image_url=it["image_data"],
+                    criteria_json=json.dumps(it.get("criteria_results")),
+                ))
+            db.add(AuditLogEntry(
+                user_id=user.id,
+                action="IMAGE_BATCH_COMPLETED",
+                details=f"Batch '{state['name']}' in folder '{state['folder_name']}': "
+                        f"{len(completed)}/{state['total']} photos labeled, {state['failed']} failed.",
+            ))
+            db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        state["persist_error"] = str(exc)[:200]
+    finally:
+        db.close()
+
+    for it in state["items"]:
+        it.pop("image_data", None)  # zero-retention: drop raw pixels from RAM registry
+    state["status"] = "COMPLETED" if state["failed"] < state["total"] else "FAILED"
+    state["elapsed_seconds"] = round(time.time() - state["start_ts"], 1)
+
+
+@router.post("/start")
+async def start_image_batch(
+    req: ImageBatchRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    raw_images = req.images or []
+    if not raw_images:
+        raise HTTPException(status_code=400, detail="Please upload at least 1 image for the batch.")
+
+    if len(raw_images) > MAX_IMAGES_PER_BATCH:
+        raise HTTPException(status_code=400, detail=f"A batch accepts at most {MAX_IMAGES_PER_BATCH} photos (got {len(raw_images)}).")
+
+    tier = (req.depth_tier or "Standard").strip().capitalize()
+    if tier not in CREDIT_COST:
+        tier = "Standard"
+
+    valid_images = []
+    for idx, img in enumerate(raw_images):
+        img_data = img.data or img.image_data or ""
+        img_name = (img.name or f"photo_{idx + 1}.jpg").strip() or f"photo_{idx + 1}.jpg"
+        if not img_data.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail=f"'{img_name}' is not a valid image data URL.")
+        if len(img_data) > MAX_BYTES_PER_IMAGE * 4 // 3:
+            raise HTTPException(status_code=413, detail=f"'{img_name}' is larger than 12 MB.")
+        valid_images.append({"name": img_name, "data": img_data})
+
+    raw_criteria = req.criteria or []
+    valid_criteria = []
+    for idx, c in enumerate(raw_criteria):
+        c_name = (c.name or "").strip()
+        if not c_name:
+            continue
+        valid_criteria.append({
+            "name": c_name,
+            "type": c.type or "Free Text",
+            "range": c.range or "",
+        })
+    if not valid_criteria:
+        valid_criteria = [{"name": "product name", "type": "Free Text", "range": "Open item name"}]
+
+    needed = CREDIT_COST.get(tier, 5) * len(valid_images)
+    rows_updated = db.query(User).filter(
+        User.id == user.id,
+        User.credits_balance >= needed
+    ).update({User.credits_balance: User.credits_balance - needed})
+    if rows_updated == 0:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Payment Required: Insufficient balance ({user.credits_balance} credits). Batch of {len(valid_images)} images requires {needed} credits. Please top up your balance."
+        )
+    db.commit()
+    db.refresh(user)
+
+    folder = (req.folder_name or "General Workspace").strip() or "General Workspace"
+    if not db.query(FolderRecord).filter(FolderRecord.name == folder).first():
+        db.add(FolderRecord(name=folder))
+        db.commit()
+
+    batch_name = (req.name or f"{len(valid_images)} Photos Inspection").strip() or f"{len(valid_images)} Photos Inspection"
+    batch_id = f"imgbatch_{uuid.uuid4().hex[:12]}"
+
+    IMAGE_BATCH_REGISTRY[batch_id] = {
+        "batch_id": batch_id,
+        "owner_id": user.id,
+        "name": batch_name,
+        "folder_name": folder,
+        "depth_tier": tier,
+        "criteria": valid_criteria,
+        "status": "PROCESSING",
+        "total": len(valid_images),
+        "done": 0,
+        "failed": 0,
+        "progress_pct": 0.0,
+        "concurrency": IMAGE_CONCURRENCY,
+        "credits_charged": 0,
+        "start_ts": time.time(),
+        "elapsed_seconds": 0.0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "items": [
+            {"index": i, "name": im["name"], "status": "QUEUED", "image_data": im["data"]}
+            for i, im in enumerate(valid_images)
+        ],
+    }
+    asyncio.create_task(_run_batch(batch_id, user.id, user.email, tier, valid_criteria))
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "total": len(valid_images),
+        "folder_name": folder,
+        "concurrency": IMAGE_CONCURRENCY,
+        "max_credits": needed,
+    }
+
+
+def _owned(batch_id: str, user: Optional[User]) -> Dict[str, Any]:
+    state = IMAGE_BATCH_REGISTRY.get(batch_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Image batch not found.")
+    if user and state.get("owner_id") and state.get("owner_id") != user.id and getattr(user, "role", "") != "admin":
+        raise HTTPException(status_code=403, detail="Access denied: You do not have permission to view this batch.")
+    return state
+
+
+@router.get("/status/{batch_id}")
+async def image_batch_status(batch_id: str, user: Optional[User] = Depends(get_optional_current_user)):
+    s = _owned(batch_id, user)
+    elapsed = round(time.time() - s["start_ts"], 1) if s["status"] == "PROCESSING" else s["elapsed_seconds"]
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "name": s["name"],
+        "folder_name": s["folder_name"],
+        "status": s["status"],
+        "total": s["total"],
+        "done": s["done"],
+        "failed": s["failed"],
+        "progress_pct": s["progress_pct"],
+        "concurrency": s["concurrency"],
+        "credits_charged": s["credits_charged"],
+        "elapsed_seconds": elapsed,
+        "items": [_public_item(i) for i in s["items"]],
+    }
+
+
+def _rows(s: Dict[str, Any]) -> (List[str], List[Dict[str, Any]]):
+    crit_names: List[str] = [c["name"] for c in s["criteria"]]
+    rows = []
+    for it in s["items"]:
+        row: Dict[str, Any] = {
+            "Photo": it["name"],
+            "Folder": s["folder_name"],
+            "Status": it["status"],
+            "Decision": it.get("decision", ""),
+            "Votes": it.get("votes", ""),
+            "Overall_Confidence_%": it.get("overall_confidence", ""),
+        }
+        by_norm = {}
+        for c in (it.get("criteria_results") or []):
+            k = (c.get("name") or c.get("heading") or "").strip()
+            if k:
+                by_norm[re.sub(r'[^a-z0-9]', '', k.lower())] = c
+
+        for n in crit_names:
+            norm_n = re.sub(r'[^a-z0-9]', '', n.lower())
+            c = by_norm.get(norm_n)
+            if not c:
+                # Loose match fallback
+                c = next((v for k, v in by_norm.items() if (k in norm_n or norm_n in k)), {})
+            row[n] = c.get("value", "")
+            row[f"{n}_Confidence_%"] = c.get("confidence", "")
+        row["Lineage_Hash"] = it.get("lineage_hash", "")
+        row["Trace_ID"] = it.get("trace_id", "")
+        row["Error"] = it.get("error", "")
+        rows.append(row)
+    return list(rows[0].keys()) if rows else [], rows
+
+
+@router.get("/report/{batch_id}")
+async def image_batch_report(
+    batch_id: str,
+    format: str = Query("csv", pattern="^(csv|json|pdf)$"),
+    user: Optional[User] = Depends(get_optional_current_user),
+):
+    s = _owned(batch_id, user)
+    if s["status"] == "PROCESSING":
+        raise HTTPException(status_code=409, detail="Batch is still processing; report is available when it finishes.")
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in s["name"]) or "batch"
+    headers_fn, rows = _rows(s)
+
+    if format == "json":
+        body = json.dumps({
+            "batch_id": batch_id,
+            "name": s["name"],
+            "folder": s["folder_name"],
+            "depth_tier": s["depth_tier"],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total": s["total"],
+            "completed": s["total"] - s["failed"],
+            "failed": s["failed"],
+            "credits_charged": s["credits_charged"],
+            "elapsed_seconds": s["elapsed_seconds"],
+            "results": [_public_item(i) for i in s["items"]],
+        }, indent=2)
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{safe}_audit.json"'})
+
+    if format == "csv":
+        out = io.StringIO()
+        w = csv.DictWriter(out, fieldnames=headers_fn)
+        w.writeheader()
+        w.writerows(rows)
+        return Response(out.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{safe}_audit.csv"'})
+
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError:
+        raise HTTPException(status_code=501, detail="PDF export needs 'reportlab' (pip install reportlab).")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    st = getSampleStyleSheet()
+    cn = [c["name"] for c in s["criteria"]]
+    els = [
+        Paragraph(f"CypherLabelGuard - Batch Audit Report: {s['name']}", st["Title"]),
+        Paragraph(
+            f"Folder: <b>{s['folder_name']}</b> &nbsp; Depth: <b>{s['depth_tier']}</b> &nbsp; "
+            f"Photos: <b>{s['total']}</b> &nbsp; Completed: <b>{s['total'] - s['failed']}</b> &nbsp; "
+            f"Failed: <b>{s['failed']}</b> &nbsp; Credits: <b>{s['credits_charged']}</b> &nbsp; "
+            f"Time: <b>{s['elapsed_seconds']}s</b>", st["Normal"]),
+        Spacer(1, 10),
+    ]
+    head = ["Photo", "Status", "Conf %"] + cn + ["Lineage"]
+    data = [head]
+    for r in rows:
+        data.append([
+            Paragraph(str(r["Photo"])[:40], st["BodyText"]),
+            r["Status"],
+            str(r["Overall_Confidence_%"]),
+            *[Paragraph(str(r.get(n, ""))[:40], st["BodyText"]) for n in cn],
+            r["Lineage_Hash"],
+        ])
+    tbl = Table(data, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#064e3b")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+    ]))
+    els.append(tbl)
+    failed = [i for i in s["items"] if i["status"] == "FAILED"]
+    if failed:
+        els += [Spacer(1, 10), Paragraph("Failed photos (not charged):", st["Heading3"])]
+        els += [Paragraph(f"{i['name']}: {i.get('error', '')}", st["BodyText"]) for i in failed]
+    doc.build(els)
+    return Response(buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}_audit.pdf"'})

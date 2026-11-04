@@ -1,0 +1,12 @@
+id: "feat_19_ramonly_mmap"
+name: "RAM-Only Memory Map"
+category: "CAT_C"
+version: "2.0.0"
+description: "Restricts all intermediate token buffers and working structures strictly to volatile RAM."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "volatile_ram_allocator"
+    name: "Volatile RAM Allocator"
+  - id: "disk_write_prevention"
+    name: "Disk Write Prevention Guard"

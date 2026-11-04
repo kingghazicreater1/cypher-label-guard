@@ -1,0 +1,16 @@
+id: "feat_14_connection_pool"
+name: "Connection Pool (500)"
+category: "CAT_B"
+version: "2.0.0"
+description: "Maintains 500 total managed connections: 125 OpenAI, 125 Claude, 125 Gemini, 125 Mistral with zero thread contention."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "openai_pool_125"
+    name: "OpenAI Dedicated Pool (125)"
+  - id: "claude_pool_125"
+    name: "Claude Dedicated Pool (125)"
+  - id: "gemini_pool_125"
+    name: "Gemini Dedicated Pool (125)"
+  - id: "mistral_pool_125"
+    name: "Mistral Dedicated Pool (125)"

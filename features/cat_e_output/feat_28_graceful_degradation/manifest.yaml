@@ -1,0 +1,12 @@
+id: "feat_28_graceful_degradation"
+name: "Graceful Degradation Proxy"
+category: "CAT_E"
+version: "2.0.0"
+description: "Tiered fallback mechanism: Parliament -> Solo Model -> Rule-Based Fallback to ensure zero unhandled failures."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "quorum_degradation_arbiter"
+    name: "Quorum Degradation Arbiter"
+  - id: "rule_based_fallback_generator"
+    name: "Rule-Based Fallback Generator"

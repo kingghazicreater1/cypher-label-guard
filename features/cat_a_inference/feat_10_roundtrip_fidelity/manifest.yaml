@@ -1,0 +1,12 @@
+id: "feat_10_roundtrip_fidelity"
+name: "Semantic Round-Trip Fidelity Score"
+category: "CAT_A"
+version: "2.0.0"
+description: "Reconstructs synthetic original intent from the consensus label and computes round-trip fidelity similarity."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "inverse_text_reconstructor"
+    name: "Inverse Text Reconstructor"
+  - id: "fidelity_similarity_comparator"
+    name: "Fidelity Similarity Comparator"
