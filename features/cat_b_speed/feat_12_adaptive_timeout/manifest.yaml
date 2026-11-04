@@ -1,0 +1,14 @@
+id: "feat_12_adaptive_timeout"
+name: "Adaptive Timeout Threshold"
+category: "CAT_B"
+version: "2.0.0"
+description: "Monitors per-model latency, manages 30s cooldown circuit breaker, and isolates failing APIs while remaining 3 proceed."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "adaptive_timeout_calculator"
+    name: "Adaptive Timeout Calculator"
+  - id: "circuit_breaker_monitor"
+    name: "Circuit Breaker Monitor (3 fails = 30s)"
+  - id: "quorum_isolation_guard"
+    name: "Quorum Isolation Guard"

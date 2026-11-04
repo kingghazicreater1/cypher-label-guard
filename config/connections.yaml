@@ -1,0 +1,31 @@
+# ==============================================================================
+# CypherLabelGuard v2.0 — Network Pools & Latency Limits (Feature 14 & 11 Core)
+# ==============================================================================
+
+pools:
+  total_concurrent_capacity: 500
+  providers:
+    openai:
+      max_connections: 125
+      keepalive_timeout: 60.0
+      base_url: "https://api.openai.com/v1"
+    anthropic:
+      max_connections: 125
+      keepalive_timeout: 60.0
+      base_url: "https://api.anthropic.com/v1"
+    gemini:
+      max_connections: 125
+      keepalive_timeout: 60.0
+      base_url: "https://generativelanguage.googleapis.com"
+    mistral:
+      max_connections: 125
+      keepalive_timeout: 60.0
+      base_url: "https://api.mistral.ai/v1"
+
+timeouts:
+  fast_tier_seconds: 2.0
+  standard_tier_seconds: 8.0
+  deep_tier_seconds: 20.0
+  circuit_breaker_cooldown_seconds: 30.0
+  circuit_breaker_trip_threshold: 3
+  circuit_breaker_isolate_threshold: 5

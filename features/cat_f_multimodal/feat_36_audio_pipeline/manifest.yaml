@@ -1,0 +1,14 @@
+id: "feat_36_audio_pipeline"
+name: "Audio Transcription Pipeline"
+category: "CAT_F"
+version: "2.0.0"
+description: "Whisper + Gemini Audio dual pipeline with cross-ASR confidence and word-error discrepancy matching."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "whisper_asr_engine"
+    name: "Whisper ASR Engine"
+  - id: "gemini_audio_engine"
+    name: "Gemini Audio Engine"
+  - id: "cross_asr_matcher"
+    name: "Cross-ASR Discrepancy Matcher"

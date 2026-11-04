@@ -1,0 +1,12 @@
+id: "feat_03_entropic_masking"
+name: "Entropic Certainty Masking"
+category: "CAT_A"
+version: "2.0.0"
+description: "Calculates Shannon entropy across votes and masks verdict to 'Unknown' when uncertainty is high."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "shannon_entropy_calculator"
+    name: "Shannon Entropy Calculator"
+  - id: "unknown_mask_activator"
+    name: "Unknown Mask Activator"

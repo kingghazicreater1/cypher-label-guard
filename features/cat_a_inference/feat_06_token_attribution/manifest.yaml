@@ -1,0 +1,12 @@
+id: "feat_06_token_attribution"
+name: "Token Attribution Provenance"
+category: "CAT_A"
+version: "2.0.0"
+description: "Traces each assigned label back to its underlying source tokens for explainability and forensic audit."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "salient_token_extractor"
+    name: "Salient Token Extractor"
+  - id: "attribution_confidence_mapper"
+    name: "Attribution Confidence Mapper"

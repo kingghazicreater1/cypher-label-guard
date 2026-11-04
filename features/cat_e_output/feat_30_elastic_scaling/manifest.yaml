@@ -1,0 +1,12 @@
+id: "feat_30_elastic_scaling"
+name: "Elastic Parliamentary Scaling"
+category: "CAT_E"
+version: "2.0.0"
+description: "Dynamically expands or contracts voting parliament sub-agents and concurrency based on system workload."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "workload_pressure_monitor"
+    name: "Workload Pressure Monitor"
+  - id: "elastic_concurrency_governor"
+    name: "Elastic Concurrency Governor"

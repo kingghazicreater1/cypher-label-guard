@@ -1,0 +1,12 @@
+id: "feat_26_bitwise_reproducibility"
+name: "Bitwise Identical Reproducibility"
+category: "CAT_D"
+version: "2.0.0"
+description: "Guarantees deterministic bit-by-bit identical output and serialization for identical inputs."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "deterministic_seed_locker"
+    name: "Deterministic Seed Locker"
+  - id: "canonical_serialization_formatter"
+    name: "Canonical Serialization Formatter"

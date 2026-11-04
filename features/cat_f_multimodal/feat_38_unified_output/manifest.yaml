@@ -1,0 +1,12 @@
+id: "feat_38_unified_output"
+name: "Unified Multi-Modal Output"
+category: "CAT_F"
+version: "2.0.0"
+description: "Formats all multimodal inferences into a standardized canonical JSON output contract."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "canonical_json_formatter"
+    name: "Canonical JSON Formatter"
+  - id: "consensus_verdict_sealer"
+    name: "Consensus Verdict Sealer"

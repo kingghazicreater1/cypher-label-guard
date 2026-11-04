@@ -1,0 +1,12 @@
+id: "feat_33_anthropological_module"
+name: "Anthropological Outsider Module"
+category: "CAT_E"
+version: "2.0.0"
+description: "Audits classifications against cultural perspective blind spots using outsider ethnographic heuristics."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "cultural_perspective_auditor"
+    name: "Cultural Perspective Auditor"
+  - id: "outsider_heuristics_engine"
+    name: "Outsider Heuristics Engine"

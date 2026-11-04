@@ -1,0 +1,12 @@
+id: "feat_18_zeroretention_pass"
+name: "Zero-Retention Inference Pass"
+category: "CAT_C"
+version: "2.0.0"
+description: "Purges raw data and in-memory inference payload immediately upon classification pass completion."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "volatile_payload_sweep"
+    name: "Volatile Payload Sweep"
+  - id: "memory_reference_sever"
+    name: "Memory Reference Severing"

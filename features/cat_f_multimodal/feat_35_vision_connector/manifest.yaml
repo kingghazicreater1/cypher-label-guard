@@ -1,0 +1,12 @@
+id: "feat_35_vision_connector"
+name: "Vision API Connector"
+category: "CAT_F"
+version: "2.0.0"
+description: "Parallel visual reasoning connector spanning GPT-4V, Claude Vision, and Gemini Vision."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "tri_vision_dispatcher"
+    name: "Tri-Vision Dispatcher"
+  - id: "visual_feature_extractor"
+    name: "Visual Feature Extractor"

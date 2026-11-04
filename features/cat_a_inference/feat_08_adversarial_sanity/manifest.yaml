@@ -1,0 +1,12 @@
+id: "feat_08_adversarial_sanity"
+name: "Adversarial Label Sanity Check"
+category: "CAT_A"
+version: "2.0.0"
+description: "Flags unnatural label mutations, jailbreak perturbations, and adversarial injection attempts."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "injection_payload_detector"
+    name: "Injection Payload Detector"
+  - id: "label_consistency_auditor"
+    name: "Label Consistency Auditor"

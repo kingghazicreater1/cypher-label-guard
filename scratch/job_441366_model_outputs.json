@@ -1,0 +1,113 @@
+{
+  "groq_oss120b": {
+    "PERSON": {
+      "value": "Mr. Samuel Ade; Mr. David Okon",
+      "confidence": 100.0,
+      "reasoning": "Both full personal names appear in the document."
+    },
+    "ORGANIZATION": {
+      "value": "Horizon Bank",
+      "confidence": 100.0,
+      "reasoning": "The only organization explicitly named."
+    },
+    "DATE": {
+      "value": "18 June 2024; 17 June 2024",
+      "confidence": 100.0,
+      "reasoning": "Exact dates are provided for the email and the login attempt."
+    },
+    "TIME": {
+      "value": "09:14 AM; 02:45 AM; 11:00 AM",
+      "confidence": 100.0,
+      "reasoning": "All clock‑face timestamps are extracted verbatim."
+    },
+    "MONEY": {
+      "value": "₦450,000; ₦15,000",
+      "confidence": 100.0,
+      "reasoning": "Both monetary amounts appear with currency symbols."
+    },
+    "POLICY/THREAT": {
+      "value": "account would be permanently frozen within 24 hours; pay a ₦15,000 security fee to reverse the block",
+      "confidence": 100.0,
+      "reasoning": "Both statements constitute threats/demands presented in the phishing email."
+    },
+    "EVENT": {
+      "value": "email claimed suspicious login attempt [CLAIM]; unauthorized transfer of ₦450,000 was blocked [CLAIM]; account would be permanently frozen within 24 hours [INTENT]; Mr. Ade ignored email [CONFIRMED]; Mr. Ade reported message to Horizon Bank fraud team at 11:00 AM [CONFIRMED]",
+      "confidence": 100.0,
+      "reasoning": "All key actions are extracted with appropriate epistemic modality tags."
+    }
+  },
+  "groq_qwen27b": {
+    "PERSON": {
+      "value": "Mr. Samuel Ade; Mr. David Okon",
+      "confidence": 100.0,
+      "reasoning": "Extracted all named individuals mentioned in the document."
+    },
+    "ORGANIZATION": {
+      "value": "Horizon Bank",
+      "confidence": 100.0,
+      "reasoning": "Identified the primary organization referenced in the text."
+    },
+    "DATE": {
+      "value": "18 June 2024; 17 June 2024",
+      "confidence": 100.0,
+      "reasoning": "Extracted all specific calendar dates mentioned."
+    },
+    "TIME": {
+      "value": "09:14 AM; 02:45 AM; 11:00 AM",
+      "confidence": 100.0,
+      "reasoning": "Extracted all clock-face timestamps, excluding durations like '24 hours'."
+    },
+    "MONEY": {
+      "value": "₦450,000; ₦15,000",
+      "confidence": 100.0,
+      "reasoning": "Extracted all monetary amounts with currency symbols."
+    },
+    "POLICY/THREAT": {
+      "value": "account would be permanently frozen within 24 hours; pay a ₦15,000 security fee to reverse the block",
+      "confidence": 100.0,
+      "reasoning": "Identified the conditional threats and demands made in the email."
+    },
+    "EVENT": {
+      "value": "sent urgent email [CONFIRMED]; claimed suspicious login attempt [CLAIM]; unauthorized transfer blocked [CLAIM]; threatened account freeze [INTENT]; ignored email [CONFIRMED]; reported message to fraud team [CONFIRMED]",
+      "confidence": 100.0,
+      "reasoning": "Extracted key actions with appropriate epistemic modality tags distinguishing facts from claims."
+    }
+  },
+  "groq_oss20b": {
+    "PERSON": {
+      "value": "Mr. Samuel Ade; Mr. David Okon",
+      "confidence": 100.0,
+      "reasoning": "Both are explicitly named individuals in the text."
+    },
+    "ORGANIZATION": {
+      "value": "Horizon Bank; Horizon Bank fraud team",
+      "confidence": 100.0,
+      "reasoning": "Both organizations are directly referenced."
+    },
+    "DATE": {
+      "value": "18 June 2024; 17 June 2024",
+      "confidence": 100.0,
+      "reasoning": "Both dates appear verbatim in the document."
+    },
+    "TIME": {
+      "value": "09:14 AM; 02:45 AM; 11:00 AM",
+      "confidence": 100.0,
+      "reasoning": "All clock times are explicitly listed."
+    },
+    "MONEY": {
+      "value": "₦450,000; ₦15,000",
+      "confidence": 100.0,
+      "reasoning": "Exact amounts with currency signs are present."
+    },
+    "POLICY/THREAT": {
+      "value": "threatened account would be permanently frozen within 24 hours",
+      "confidence": 100.0,
+      "reasoning": "This is the only threat statement in the text."
+    },
+    "EVENT": {
+      "value": "reported message to fraud team at 11:00 AM [CONFIRMED]; ignored email [CONFIRMED]; email claimed suspicious login attempt [CLAIM]; email claimed unauthorized transfer blocked [CLAIM]; email threatened account freeze [INTENT]; email demanded security fee [CLAIM]",
+      "confidence": 100.0,
+      "reasoning": "All events are extracted with appropriate epistemic tags."
+    }
+  }
+}

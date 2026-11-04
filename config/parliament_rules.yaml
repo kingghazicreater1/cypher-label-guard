@@ -1,0 +1,66 @@
+# ==============================================================================
+# CypherLabelGuard v2.0 — Parliamentary Consensus Rules (Feature 04 Core)
+# ==============================================================================
+
+parliament:
+  name: "CYPHER_LABEL_GUARD_32_VOTE_PARLIAMENT"
+  version: "2.0.0"
+
+  models:
+    - id: "openai_gpt4"
+      name: "GPT-4 / GPT-4o"
+      weight: 1.0
+    - id: "anthropic_claude"
+      name: "Claude 3.5 Sonnet"
+      weight: 1.0
+    - id: "google_gemini"
+      name: "Gemini 1.5/2.0 Flash"
+      weight: 1.0
+    - id: "mistral_large"
+      name: "Mistral Large"
+      weight: 1.0
+
+  dimensions:
+    - id: "category"
+      name: "Primary Category"
+      description: "Classifies the primary domain label"
+    - id: "confidence"
+      name: "Confidence Scorer"
+      description: "Evaluates numerical certainty calibration"
+    - id: "sub_category"
+      name: "Sub-Category"
+      description: "Finer taxonomic classification"
+    - id: "anomaly"
+      name: "Anomaly Detection"
+      description: "Flags out-of-distribution patterns"
+    - id: "sentiment"
+      name: "Sentiment & Tone"
+      description: "Underlying polarity and intent"
+    - id: "entity_relationship"
+      name: "Entity Relationship"
+      description: "Inter-entity graph structure mapping"
+    - id: "temporal_context"
+      name: "Temporal Context"
+      description: "Time-dependency and historical positioning"
+    - id: "risk_assessment"
+      name: "Risk Assessment"
+      description: "Safety, toxicity, regulatory compliance risk"
+
+  total_votes: 32  # 4 APIs x 8 Dimensions
+
+  thresholds:
+    confirmed_min: 28     # >= 28 votes = Confirmed
+    stalemate_min: 17     # 17 - 27 votes = Stalemate
+    stalemate_max: 27
+    human_review_max: 16  # <= 16 votes = Human Review
+
+  decay_half_life_hours: 48.0  # Contextual Weighted Tie-Break decay
+
+  # Gated Adversarial Debate Protocol (Feature 09)
+  adversarial_debate:
+    enabled: true
+    trigger: "stalemate_or_discordance"
+    max_cross_examination_rounds: 2
+    anti_sycophancy_filter: true
+    chief_arbitrator_model: "anthropic_claude"
+

@@ -1,0 +1,12 @@
+id: "feat_34_multimodal_router"
+name: "Multi-Modal Router"
+category: "CAT_F"
+version: "2.0.0"
+description: "Automatically inspects raw payload and routes to specialized Text, Vision, Audio, or Video pipelines."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "mime_signature_inspector"
+    name: "MIME Signature Inspector"
+  - id: "pipeline_dispatch_router"
+    name: "Pipeline Dispatch Router"

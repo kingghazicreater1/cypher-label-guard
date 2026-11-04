@@ -1,0 +1,14 @@
+id: "feat_20_echo_cancellation"
+name: "Data Echo Cancellation"
+category: "CAT_C"
+version: "2.0.0"
+description: "Prevents input leakage into outputs through verbatim suppression, timestamp obfuscation, and dummy padding."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "verbatim_suppression"
+    name: "Verbatim Reflection Suppression"
+  - id: "timestamp_obfuscation"
+    name: "Timestamp Obfuscation & Jitter"
+  - id: "dummy_padding"
+    name: "Dummy Block Padding"

@@ -1,0 +1,12 @@
+id: "feat_37_video_sampler"
+name: "Video Frame Sampler"
+category: "CAT_F"
+version: "2.0.0"
+description: "Samples high-information keyframes from video streams and feeds them into the Vision API connectors."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "scene_change_detector"
+    name: "Scene Change Detector"
+  - id: "frame_buffer_normalizer"
+    name: "Frame Buffer Normalizer"

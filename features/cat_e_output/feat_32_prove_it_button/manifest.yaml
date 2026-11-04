@@ -1,0 +1,12 @@
+id: "feat_32_prove_it_button"
+name: "Prove It Button"
+category: "CAT_E"
+version: "2.0.0"
+description: "Generates 1-click comprehensive forensic audit proof behind every label, including full 32 votes and SHA-256 hash chain."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "forensic_dossier_builder"
+    name: "Forensic Dossier Builder"
+  - id: "sha256_audit_chain_verifier"
+    name: "SHA-256 Audit Chain Verifier"

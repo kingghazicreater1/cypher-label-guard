@@ -1,0 +1,12 @@
+id: "feat_25_epistemic_humility"
+name: "Epistemic Humility Flag"
+category: "CAT_D"
+version: "2.0.0"
+description: "Empowers the system with the courage to declare 'I do not know' rather than hallucinating false labels."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "epistemic_humility_activator"
+    name: "Epistemic Humility Activator"
+  - id: "humble_unknown_emitter"
+    name: "Humble Unknown Emitter"

@@ -1,0 +1,12 @@
+id: "feat_31_live_dashboard"
+name: "Live Parliament Dashboard"
+category: "CAT_E"
+version: "2.0.0"
+description: "Formats and streams the real-time 4×8 parliamentary grid with tri-color (Green/Yellow/Red) state indicators."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "grid_4x8_matrix_formatter"
+    name: "4×8 Matrix Grid Formatter (32 Tiles)"
+  - id: "websocket_telemetry_streamer"
+    name: "WebSocket Telemetry Streamer"

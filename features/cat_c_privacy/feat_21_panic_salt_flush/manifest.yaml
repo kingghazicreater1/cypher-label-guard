@@ -1,0 +1,12 @@
+id: "feat_21_panic_salt_flush"
+name: "Panic-Induced Salt Flush"
+category: "CAT_C"
+version: "2.0.0"
+description: "Emergency circuit to purge all ephemeral salts, nonces, and session keys instantly on panic."
+entrypoint: "feature.py"
+enabled: true
+sub_features:
+  - id: "cryptographic_salt_scrub"
+    name: "Cryptographic Salt Scrub"
+  - id: "emergency_quarantine"
+    name: "Emergency Quarantine Lock"
