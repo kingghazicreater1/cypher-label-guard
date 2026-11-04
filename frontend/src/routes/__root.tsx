@@ -14,6 +14,9 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { GuardianProvider } from "@/components/guardian/context";
 import { GuardianShell } from "@/components/guardian/shell";
+import { ClerkProvider } from "@clerk/clerk-react";
+import { dark } from "@clerk/themes";
+import { CLERK_PUBLISHABLE_KEY, isClerkConfigured } from "@/components/guardian/clerk-auth";
 
 function NotFoundComponent() {
   return (
@@ -121,9 +124,35 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  const appContent = (
+    <GuardianProvider>
+      <GuardianShell>
+        <Outlet />
+      </GuardianShell>
+    </GuardianProvider>
+  );
+
   return (
     <QueryClientProvider client={queryClient}>
-      <GuardianProvider><GuardianShell><Outlet /></GuardianShell></GuardianProvider>
+      {isClerkConfigured ? (
+        <ClerkProvider
+          publishableKey={CLERK_PUBLISHABLE_KEY}
+          appearance={{
+            baseTheme: dark,
+            variables: {
+              colorPrimary: "#10b981",
+              colorBackground: "#090f0b",
+              colorInputBackground: "#0c1610",
+              colorInputText: "#ecfdf5",
+              colorText: "#ffffff",
+            },
+          }}
+        >
+          {appContent}
+        </ClerkProvider>
+      ) : (
+        appContent
+      )}
     </QueryClientProvider>
   );
 }
