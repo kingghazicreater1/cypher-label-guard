@@ -56,21 +56,9 @@ function ClerkKeySetupForm() {
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card p-5 text-foreground space-y-4">
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-          <KeyRound className="h-4 w-4 text-primary" />
-        </div>
-        <div>
-          <h4 className="font-semibold text-xs text-foreground font-display">Clerk.com Connection</h4>
-          <p className="text-[11px] text-muted-foreground font-mono">
-            Publishable Key (pk_test_...) is public & safe to enter
-          </p>
-        </div>
-      </div>
-
+    <div className="space-y-3">
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Enter your Clerk <strong>Publishable Key</strong> below (from <code className="text-primary font-mono text-[11px]">dashboard.clerk.com &rarr; API Keys</code>):
+        Enter your Clerk <strong>Publishable Key</strong> (from <code className="text-primary font-mono text-[11px]">dashboard.clerk.com &rarr; API Keys</code>):
       </p>
 
       <form onSubmit={handleSavePublishableKey} className="space-y-3">
@@ -85,11 +73,10 @@ function ClerkKeySetupForm() {
         </div>
         <Button
           type="submit"
-          className="w-full text-xs font-semibold h-9 gap-2"
+          className="w-full text-xs font-semibold h-9 gap-1.5"
         >
           <Sparkles className="w-3.5 h-3.5" />
-          <span>Connect & Activate Clerk Auth</span>
-          <ArrowRight className="w-3.5 h-3.5" />
+          <span>Connect Clerk Auth</span>
         </Button>
       </form>
     </div>
