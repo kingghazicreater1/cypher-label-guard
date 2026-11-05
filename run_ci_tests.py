@@ -41,6 +41,7 @@ def main():
         ("Job #377549 Frontend Regression Test", ["node", "scratch/test_job_377549_regression.mjs"]),
         ("Suite E Strengthened Adversarial Re-ID Benchmark (Tiers 1, 2, 3)", ["python", "-m", "unittest", "tests/test_suite_e_adversarial_reid.py"]),
         ("Gated Adversarial Debate Protocol Suite (Feature 09)", ["python", "-m", "unittest", "tests/test_gated_adversarial_debate.py"]),
+        ("Clerk Auth Security Suite (signature-verified, no backdoors)", ["python", "-m", "unittest", "tests/test_clerk_auth.py"]),
         ("Comprehensive Multi-Modal CI Test Matrix (5 Modalities, Guards & Feature 38)", ["python", "-m", "unittest", "tests/test_multimodal_comprehensive_matrix.py"]),
     ]
 

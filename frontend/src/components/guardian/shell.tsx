@@ -17,8 +17,6 @@ import {
   ExternalLink,
   Plus,
   ArrowUpRight,
-  Smartphone,
-  Mail,
   LogIn,
   LogOut,
   UserCheck,
@@ -29,15 +27,11 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { Toaster, toast } from 'sonner';
 import { useGuardian } from './context';
 import {
-  googleLogin,
-  sendPhoneOtp,
-  verifyPhoneOtp,
-  loginWithEmail,
-  signupWithEmail,
   getCurrentUserProfile,
 } from '@/lib/api';
 import { exportFile, labels } from './data';
 import { AuthGatekeeper } from './auth-gatekeeper';
+import { refreshAuthToken, signOutEverywhere } from '@/lib/auth-token';
 
 // The 5 core tabs as requested by the user from the Design 3 screenshot
 const bottomNav = [
@@ -58,12 +52,12 @@ export function GuardianShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Authentication & Profile State (Google, Phone OTP, Email)
+  // Authentication & Profile State (Clerk only)
   interface UserProfile {
     name: string;
     email: string;
     phone?: string | undefined;
-    authMethod: 'google' | 'phone' | 'email';
+    authMethod: 'clerk';
     isLoggedIn: boolean;
   }
 
@@ -78,192 +72,42 @@ export function GuardianShell({ children }: { children: ReactNode }) {
     return null;
   });
 
-  // Verify and hydrate active session on initial load against /api/v2/auth/me
+  // Verify and hydrate the active session on initial load against /api/v2/auth/me.
+  // The Clerk session token is short-lived, so get a fresh one before asking the backend.
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
-    if (token) {
-      getCurrentUserProfile()
-        .then((res) => {
-          if (res?.user) {
-            const profile: UserProfile = {
-              name: res.user.full_name || 'Commander',
-              email: res.user.email,
-              phone: res.user.phone || undefined,
-              authMethod: res.user.email.includes('phone_')
-                ? 'phone'
-                : res.user.email.includes('@cypherlabelguard.ai')
-                ? 'google'
-                : 'email',
-              isLoggedIn: true,
-            };
-            setCurrentUser(profile);
-            localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-          }
-        })
-        .catch(() => {
-          // Token is expired, invalid, or database state changed
-          localStorage.removeItem('cypher_auth_token');
-          localStorage.removeItem('cypher_user_profile');
-          setCurrentUser(null);
-          setAuthTab('email');
-        });
-    }
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
+    if (!stored) return;
+    let cancelled = false;
+    (async () => {
+      await refreshAuthToken();
+      try {
+        const res = await getCurrentUserProfile();
+        if (cancelled || !res?.user) return;
+        const profile: UserProfile = {
+          name: res.user.full_name || 'User',
+          email: res.user.email,
+          authMethod: 'clerk',
+          isLoggedIn: true,
+        };
+        setCurrentUser(profile);
+        localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
+      } catch {
+        if (cancelled) return;
+        // Token missing/expired/invalid: drop local state and show the sign-in screen.
+        localStorage.removeItem('cypher_auth_token');
+        localStorage.removeItem('cypher_user_profile');
+        setCurrentUser(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const [authTab, setAuthTab] = useState<'profile' | 'google' | 'phone' | 'email'>(() => {
-    return typeof window !== 'undefined' && localStorage.getItem('cypher_auth_token') ? 'profile' : 'email';
-  });
-  const [phoneInput, setPhoneInput] = useState('+923001234567');
-  const [otpInput, setOtpInput] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
-  const [demoOtpCode, setDemoOtpCode] = useState<string | null>(null);
-  const [isSendingOtp, setIsSendingOtp] = useState(false);
-  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
-
-  // Email form state (Email OTP vs Password Login vs Signup)
-  const [emailMode, setEmailMode] = useState<'login' | 'signup'>('login');
-  const [emailInput, setEmailInput] = useState('kingghazi123580@gmail.com');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [fullNameInput, setFullNameInput] = useState('King Ghazi');
-  const [googleEmailInput, setGoogleEmailInput] = useState('commander@cypherlabelguard.ai');
-  const [isSubmittingEmail, setIsSubmittingEmail] = useState(false);
-
-  const handleGoogleSignIn = async () => {
-    try {
-      const targetEmail = googleEmailInput.trim() || 'commander@cypherlabelguard.ai';
-      toast.info(`Authenticating with Google (${targetEmail})...`);
-      const res = await googleLogin(targetEmail, fullNameInput.trim() || 'King Ghazi');
-      const profile: UserProfile = {
-        name: res.user?.full_name || 'King Ghazi',
-        email: res.user?.email || targetEmail,
-        phone: currentUser?.phone || '+92 300 1234567',
-        authMethod: 'google',
-        isLoggedIn: true,
-      };
-      setCurrentUser(profile);
-      localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-      if (res.token) localStorage.setItem('cypher_auth_token', res.token);
-      toast.success(`Signed in with Google as ${profile.email}`);
-      setAuthTab('profile');
-      await refreshBilling();
-    } catch (err: any) {
-      toast.error(`Google authentication failed: ${err.message}`);
-    }
-  };
-
-  const handleSendPhoneOtp = async () => {
-    const cleanPhone = phoneInput.trim().replace(/\s+/g, '');
-    if (cleanPhone.length < 9) {
-      toast.error('Please enter a valid mobile number with country code (e.g. +923001234567)');
-      return;
-    }
-    setIsSendingOtp(true);
-    try {
-      const res = await sendPhoneOtp(cleanPhone);
-      setOtpSent(true);
-      if (res.demo_otp) {
-        setDemoOtpCode(res.demo_otp);
-        setOtpInput(''); // Must enter code manually, no fake bypass
-        toast.info(`SMS code generated: ${res.demo_otp} (Please enter this code below)`);
-      } else {
-        toast.success(`Verification code dispatched to ${cleanPhone}`);
-      }
-    } catch (err: any) {
-      toast.error(`Failed to dispatch SMS: ${err.message}`);
-    } finally {
-      setIsSendingOtp(false);
-    }
-  };
-
-  const handleVerifyPhoneOtp = async () => {
-    const cleanOtp = otpInput.trim();
-    if (!cleanOtp || cleanOtp.length < 6) {
-      toast.error('Please enter the full 6-digit verification code');
-      return;
-    }
-    setIsVerifyingOtp(true);
-    try {
-      const res = await verifyPhoneOtp(phoneInput.trim(), cleanOtp);
-      const profile: UserProfile = {
-        name: res.user?.full_name || `Verified (${phoneInput.slice(-4)})`,
-        email: res.user?.email || `${phoneInput.replace(/\+/g, '')}@phone.cypherlabelguard.ai`,
-        phone: phoneInput.trim(),
-        authMethod: 'phone',
-        isLoggedIn: true,
-      };
-      setCurrentUser(profile);
-      localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-      if (res.token) localStorage.setItem('cypher_auth_token', res.token);
-      toast.success('Phone verified successfully! Authenticated session established.');
-      setAuthTab('profile');
-      await refreshBilling();
-    } catch (err: any) {
-      toast.error(`Verification rejected: ${err.message}`);
-    } finally {
-      setIsVerifyingOtp(false);
-    }
-  };
-
-  const handleEmailAuth = async () => {
-    const trimmedEmail = emailInput.trim();
-    const trimmedPassword = passwordInput.trim();
-
-    if (!trimmedEmail || !trimmedPassword) {
-      toast.error('Please enter both email address and password');
-      return;
-    }
-
-    if (trimmedPassword.length < 6) {
-      toast.error('Password must be at least 6 characters long');
-      return;
-    }
-
-    setIsSubmittingEmail(true);
-    try {
-      if (emailMode === 'signup') {
-        const res = await signupWithEmail(trimmedEmail, trimmedPassword, fullNameInput.trim() || undefined);
-        const profile: UserProfile = {
-          name: res.user?.full_name || fullNameInput.trim() || trimmedEmail.split('@')[0],
-          email: res.user?.email || trimmedEmail,
-          phone: currentUser?.phone || undefined,
-          authMethod: 'email',
-          isLoggedIn: true,
-        };
-        setCurrentUser(profile);
-        localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-        if (res.token) localStorage.setItem('cypher_auth_token', res.token);
-        toast.success(`Account created successfully! Welcome, ${profile.name}`);
-        setAuthTab('profile');
-        await refreshBilling();
-      } else {
-        const res = await loginWithEmail(trimmedEmail, trimmedPassword);
-        const profile: UserProfile = {
-          name: res.user?.full_name || trimmedEmail.split('@')[0],
-          email: res.user?.email || trimmedEmail,
-          phone: currentUser?.phone || undefined,
-          authMethod: 'email',
-          isLoggedIn: true,
-        };
-        setCurrentUser(profile);
-        localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-        if (res.token) localStorage.setItem('cypher_auth_token', res.token);
-        toast.success(`Signed in successfully as ${profile.email}`);
-        setAuthTab('profile');
-        await refreshBilling();
-      }
-    } catch (err: any) {
-      toast.error(`Authentication failed: ${err.message}`);
-    } finally {
-      setIsSubmittingEmail(false);
-    }
-  };
-
-  const handleSignOut = () => {
-    localStorage.removeItem('cypher_auth_token');
-    localStorage.removeItem('cypher_user_profile');
+  const handleSignOut = async () => {
+    await signOutEverywhere();
     setCurrentUser(null);
     setGuestBypassed(false);
-    setAuthTab('email');
     toast.info('Signed out. Active session terminated.');
     refreshBilling();
   };
@@ -516,193 +360,74 @@ export function GuardianShell({ children }: { children: ReactNode }) {
             </div>
           ) : modal === 'profile' ? (
             <div className="space-y-4">
-              {/* Auth Modal Tab Bar - Pure Email Authentication */}
-              <div className="flex border-b border-border gap-1 pb-1">
-                {currentUser && (
-                  <button
-                    type="button"
-                    onClick={() => setAuthTab('profile')}
-                    className={`text-xs px-3 py-1.5 rounded-t font-medium transition-colors ${
-                      authTab === 'profile'
-                        ? 'text-primary border-b-2 border-primary font-bold'
-                        : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    Current Profile
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setAuthTab('email')}
-                  className={`text-xs px-3 py-1.5 rounded-t font-medium transition-colors flex items-center gap-1.5 ${
-                    authTab === 'email' || !currentUser
-                      ? 'text-primary border-b-2 border-primary font-bold'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <Mail size={13} />
-                  <span>{currentUser ? 'Switch / Sign In with Another Email' : 'Email Security Verification'}</span>
-                </button>
-              </div>
-
-              {/* View 1: Active User Profile */}
-              {authTab === 'profile' && (
-                currentUser ? (
-                  <>
-                    <div className="flex items-center gap-3 py-3 border-b border-border/60">
-                      <span className="w-12 h-12 rounded-full bg-primary/20 text-primary font-bold text-lg flex items-center justify-center font-mono border border-primary/40">
-                        {currentUser.name
-                          .split(' ')
-                          .map((n) => n[0])
-                          .slice(0, 2)
-                          .join('')
-                          .toUpperCase() || 'KG'}
-                      </span>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <strong className="text-sm font-semibold">{currentUser.name}</strong>
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-success/15 text-success border border-success/30 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-success inline-block" />
-                            VERIFIED SESSION
-                          </span>
-                        </div>
-                        <p className="text-muted-foreground text-xs font-mono">{currentUser.email}</p>
+              {currentUser ? (
+                <>
+                  <div className="flex items-center gap-3 py-3 border-b border-border/60">
+                    <span className="w-12 h-12 rounded-full bg-primary/20 text-primary font-bold text-lg flex items-center justify-center font-mono border border-primary/40">
+                      {currentUser.name
+                        .split(' ')
+                        .map((n) => n[0])
+                        .slice(0, 2)
+                        .join('')
+                        .toUpperCase() || 'U'}
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <strong className="text-sm font-semibold">{currentUser.name}</strong>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-success/15 text-success border border-success/30 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-success inline-block" />
+                          VERIFIED SESSION
+                        </span>
                       </div>
-                    </div>
-
-                    <div className="p-3 rounded-lg bg-primary/5 border border-primary/10 text-xs space-y-1">
-                      <span className="text-muted-foreground block text-[10px] uppercase font-semibold">
-                        Authentication Method
-                      </span>
-                      <p className="font-medium text-foreground flex items-center gap-1.5">
-                        Official Enterprise Account
-                      </p>
-                    </div>
-
-                    <div className="flex flex-col gap-2 pt-2">
-                      <Button asChild variant="outline" className="justify-start text-xs h-9">
-                        <Link to="/settings" onClick={() => setModal(null)}>
-                          <Sliders size={14} className="mr-2 text-primary" />
-                          Configure Enterprise Key Slots
-                        </Link>
-                      </Button>
-                      <Button asChild variant="outline" className="justify-start text-xs h-9">
-                        <Link to="/tenants" onClick={() => setModal(null)}>
-                          <Shield size={14} className="mr-2 text-primary" />
-                          Manage SaaS Subscription & Token Wallet
-                        </Link>
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="justify-start text-xs text-destructive hover:bg-destructive/10 hover:text-destructive h-9 border-destructive/30"
-                        onClick={handleSignOut}
-                      >
-                        <LogOut size={14} className="mr-2" />
-                        Sign Out from Active Session
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="py-6 text-center space-y-3">
-                    <div className="w-12 h-12 mx-auto rounded-full bg-muted flex items-center justify-center text-muted-foreground">
-                      <LockKeyhole size={20} className="text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-semibold text-foreground">Guest Workspace (Not Signed In)</h4>
-                      <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
-                        Please sign in with your email address to access dedicated tenant workspaces, token packages, and API keys.
-                      </p>
-                    </div>
-                    <div className="flex justify-center gap-2 pt-2">
-                      <Button size="sm" onClick={() => setAuthTab('email')}>
-                        <Mail size={13} className="mr-1.5" />
-                        Sign In with Email & Password
-                      </Button>
+                      <p className="text-muted-foreground text-xs font-mono">{currentUser.email}</p>
                     </div>
                   </div>
-                )
-              )}
 
-              {/* View 4: Real Email Authentication (Password Login & Sign Up) */}
-              {authTab === 'email' && (
-                <div className="py-2 space-y-3">
-                  <div className="flex rounded bg-muted/60 p-1 mb-1 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setEmailMode('login')}
-                      className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
-                        emailMode === 'login'
-                          ? 'bg-background text-foreground shadow-sm font-bold text-primary'
-                          : 'text-muted-foreground hover:text-foreground'
-                      }`}
+                  <div className="flex flex-col gap-2 pt-2">
+                    <Button asChild variant="outline" className="justify-start text-xs h-9">
+                      <Link to="/settings" onClick={() => setModal(null)}>
+                        <Sliders size={14} className="mr-2 text-primary" />
+                        Configure Enterprise Key Slots
+                      </Link>
+                    </Button>
+                    <Button asChild variant="outline" className="justify-start text-xs h-9">
+                      <Link to="/tenants" onClick={() => setModal(null)}>
+                        <Shield size={14} className="mr-2 text-primary" />
+                        Manage SaaS Subscription & Token Wallet
+                      </Link>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="justify-start text-xs text-destructive hover:bg-destructive/10 hover:text-destructive h-9 border-destructive/30"
+                      onClick={handleSignOut}
                     >
-                      Sign In (Password)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEmailMode('signup')}
-                      className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
-                        emailMode === 'signup'
-                          ? 'bg-background text-foreground shadow-sm font-bold text-primary'
-                          : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      Sign Up (Create Account)
-                    </button>
+                      <LogOut size={14} className="mr-2" />
+                      Sign Out from Active Session
+                    </Button>
                   </div>
-
-                  {emailMode === 'signup' && (
-                    <div>
-                      <label className="text-xs font-medium text-foreground block mb-1">
-                        Full Name
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Your Name (e.g. King Ghazi)"
-                        value={fullNameInput}
-                        onChange={(e) => setFullNameInput(e.target.value)}
-                        className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                      />
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="text-xs font-medium text-foreground block mb-1">
-                      Email Address
-                    </label>
-                    <input
-                      type="email"
-                      placeholder="user@example.com"
-                      value={emailInput}
-                      onChange={(e) => setEmailInput(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                    />
+                </>
+              ) : (
+                <div className="py-6 text-center space-y-3">
+                  <div className="w-12 h-12 mx-auto rounded-full bg-muted flex items-center justify-center text-muted-foreground">
+                    <LockKeyhole size={20} className="text-muted-foreground" />
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-foreground block mb-1">
-                      Password {emailMode === 'signup' ? '(min 6 characters)' : ''}
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="Enter password..."
-                      value={passwordInput}
-                      onChange={(e) => setPasswordInput(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                    />
+                    <h4 className="text-sm font-semibold text-foreground">Guest Workspace (Not Signed In)</h4>
+                    <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
+                      Sign in to access dedicated tenant workspaces, token packages, and API keys.
+                    </p>
                   </div>
-
-                  <Button
-                    type="button"
-                    className="w-full h-9 text-xs font-semibold mt-2"
-                    disabled={isSubmittingEmail}
-                    onClick={handleEmailAuth}
-                  >
-                    {isSubmittingEmail
-                      ? 'Authenticating...'
-                      : emailMode === 'signup'
-                      ? 'Register & Create Account'
-                      : 'Sign In'}
-                  </Button>
+                  <div className="flex justify-center gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setModal(null);
+                        setGuestBypassed(false);
+                      }}
+                    >
+                      Sign In
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>

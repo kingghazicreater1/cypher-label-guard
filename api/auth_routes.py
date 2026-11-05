@@ -1,218 +1,262 @@
 # ==============================================================================
-# CypherLabelGuard CORE EDITION v2.0
-# User Authentication & Profile Routes (JWT + bcrypt)
+# CypherLabelGuard: Authentication (Clerk-only, signature-verified)
+#
+# Needs: pip install "pyjwt[crypto]"
+# Env:
+#   CLERK_SECRET_KEY          sk_live_... / sk_test_...  (used to read the user's verified email)
+#   CLERK_ISSUER              e.g. https://your-app.clerk.accounts.dev
+#                             (optional: derived from VITE_CLERK_PUBLISHABLE_KEY / CLERK_PUBLISHABLE_KEY)
+#   CLERK_AUTHORIZED_PARTIES  optional, comma list of your site origins (checks the `azp` claim)
+#   ADMIN_EMAILS              comma list of verified emails that become Administrator
+#   FREE_SIGNUP_CREDITS       default 500
+#
+# Removed on purpose: /signup, /login, /google, /phone/*, /commander-unlock and the
+# app-issued HS256 tokens. Every request is authenticated ONLY by a Clerk session
+# token whose RS256 signature, issuer and expiry are verified against Clerk's JWKS.
+# Fail-closed: if Clerk is not configured on the server, nobody is authenticated.
 # ==============================================================================
-
+import base64
+import json
+import logging
 import os
+import threading
 import time
+import urllib.request
+from typing import Any, Dict, Optional, Tuple
+
 import jwt
-import bcrypt
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Header, status
-from pydantic import BaseModel, EmailStr, Field
+from jwt import PyJWKClient
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
 from db.database import get_db
-from db.models import User, AuditLogEntry
+from db.models import AuditLogEntry, User
+
+logger = logging.getLogger("CYPHER_LABEL_GUARD.Auth")
 
 router = APIRouter(prefix="/api/v2/auth", tags=["Authentication & User Management"])
 
-JWT_SECRET = os.getenv("JWT_SECRET", "cypher_label_guard_cryptographic_jwt_secret_key_2026")
-JWT_ALGORITHM = "HS256"
-CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
+
+# ------------------------------------------------------------------------------
+# Configuration (read lazily so .env loading order and tests never matter)
+# ------------------------------------------------------------------------------
+def _clerk_secret() -> str:
+    return os.getenv("CLERK_SECRET_KEY", "").strip()
 
 
-def verify_clerk_token(token: str, db: Session) -> Optional[User]:
-    """Verifies a Clerk session token or Clerk-authenticated request.
-    Validates payload claims or verifies against Clerk API if CLERK_SECRET_KEY is present."""
+def _free_credits() -> int:
     try:
-        unverified = jwt.decode(token, options={"verify_signature": False})
-        sub = str(unverified.get("sub", ""))
-        iss = str(unverified.get("iss", ""))
-        is_clerk = ("clerk" in iss.lower()) or sub.startswith("user_") or ("clerk" in sub.lower())
+        return int(os.getenv("FREE_SIGNUP_CREDITS", "500"))
+    except ValueError:
+        return 500
 
-        if not is_clerk and not CLERK_SECRET_KEY:
+
+def _admin_emails() -> set:
+    return {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+
+def _authorized_parties() -> set:
+    return {p.strip() for p in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",") if p.strip()}
+
+
+def _issuer() -> Optional[str]:
+    explicit = os.getenv("CLERK_ISSUER", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    pk = os.getenv("CLERK_PUBLISHABLE_KEY") or os.getenv("VITE_CLERK_PUBLISHABLE_KEY") or ""
+    parts = pk.split("_", 2)  # pk_test_<base64(domain$)>
+    if len(parts) == 3 and parts[2]:
+        try:
+            raw = parts[2] + "=" * (-len(parts[2]) % 4)
+            domain = base64.b64decode(raw).decode("utf-8").rstrip("$")
+            if domain and "." in domain:
+                return f"https://{domain}"
+        except Exception:
             return None
-
-        clerk_user_id = sub
-        email = (
-            unverified.get("email")
-            or unverified.get("primary_email_address")
-            or unverified.get("email_address")
-        )
-        full_name = unverified.get("name") or unverified.get("full_name") or "Clerk User"
-
-        if CLERK_SECRET_KEY and (not email or str(email).endswith("@clerk.user")):
-            try:
-                import urllib.request
-                import json
-                req = urllib.request.Request(
-                    f"https://api.clerk.com/v1/users/{clerk_user_id}",
-                    headers={
-                        "Authorization": f"Bearer {CLERK_SECRET_KEY}",
-                        "User-Agent": "CypherLabelGuard-Backend",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    data = json.loads(resp.read().decode())
-                    emails = data.get("email_addresses", [])
-                    if emails:
-                        email = emails[0].get("email_address")
-                    first = data.get("first_name", "")
-                    last = data.get("last_name", "")
-                    if first or last:
-                        full_name = f"{first} {last}".strip()
-            except Exception:
-                pass
-
-        if not clerk_user_id:
-            return None
-
-        user = None
-        if email:
-            user = db.query(User).filter((User.id == clerk_user_id) | (User.email == email)).first()
-        else:
-            user = db.query(User).filter(User.id == clerk_user_id).first()
-
-        if not user:
-            user = User(
-                id=clerk_user_id,
-                email=email or f"{clerk_user_id}@clerk.user",
-                hashed_password="clerk_oauth_verified_account",
-                full_name=full_name,
-                role="Administrator",
-                workspace_name="Clerk Workspace",
-                credits_balance=5000,
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        return user
-    except Exception:
-        return None
+    return None
 
 
-
-class SignupRequest(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: str = "King Ghazi"
-    workspace_name: str = "Ghazi Workspace"
+_jwk_clients: Dict[str, PyJWKClient] = {}
+_jwk_lock = threading.Lock()
 
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+def _jwk_client(issuer: str) -> PyJWKClient:
+    with _jwk_lock:
+        client = _jwk_clients.get(issuer)
+        if client is None:
+            client = PyJWKClient(f"{issuer}/.well-known/jwks.json", cache_keys=True, lifespan=3600)
+            _jwk_clients[issuer] = client
+        return client
 
 
-class UpdateProfileRequest(BaseModel):
-    full_name: Optional[str] = None
-    workspace_name: Optional[str] = None
-
-
-def create_token(user_id: str, email: str) -> str:
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "exp": datetime.now(timezone.utc) + timedelta(days=30),
-        "iat": datetime.now(timezone.utc),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-def get_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> User:
-    """Extracts authenticated user from Bearer JWT header. Rejects unauthenticated requests with 401."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Please sign in or create an account to access this feature."
-        )
-
-    token = authorization[7:].strip()
-    clerk_u = verify_clerk_token(token, db)
-    if clerk_u:
-        return clerk_u
-
+def _verify_clerk_jwt(token: str) -> Dict[str, Any]:
+    """Verifies signature (RS256 via Clerk JWKS), issuer and expiry. Raises HTTPException on any failure."""
+    issuer = _issuer()
+    if not issuer:
+        # Fail closed: without Clerk configured nobody is authenticated.
+        raise HTTPException(status_code=503, detail="Authentication is not configured on the server.")
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload. Please sign in again.")
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            return user
+        signing_key = _jwk_client(issuer).get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],  # never accept HS256 / none
+            issuer=issuer,
+            leeway=10,
+            options={"require": ["exp", "iat", "sub", "iss"], "verify_aud": False},
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid session token. Please sign in.")
 
-    raise HTTPException(status_code=401, detail="User account not found. Please sign in.")
+    azp = claims.get("azp")
+    parties = _authorized_parties()
+    if parties and azp and azp not in parties:
+        raise HTTPException(status_code=401, detail="Invalid session token origin.")
+    return claims
 
 
-def get_optional_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> Optional[User]:
-    """Returns the authenticated user if a valid Bearer token is provided, or None for guest/unauthenticated requests."""
+_profile_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_PROFILE_TTL = 300.0
+
+
+def _clerk_profile(clerk_user_id: str, claims: Dict[str, Any]) -> Dict[str, Any]:
+    """Returns {'email', 'name'} for a verified Clerk user. The email must be verified by Clerk."""
+    cached = _profile_cache.get(clerk_user_id)
+    if cached and time.time() - cached[0] < _PROFILE_TTL:
+        return cached[1]
+
+    email = None
+    name = claims.get("name") or claims.get("full_name")
+
+    # Signed custom claim (only present if added in the Clerk session token template).
+    claim_email = claims.get("email") or claims.get("primary_email_address")
+    if claim_email and claims.get("email_verified", True):
+        email = str(claim_email).strip().lower()
+
+    secret = _clerk_secret()
+    if not email and secret:
+        try:
+            req = urllib.request.Request(
+                f"https://api.clerk.com/v1/users/{clerk_user_id}",
+                headers={"Authorization": f"Bearer {secret}", "User-Agent": "CypherLabelGuard-Backend"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+            primary_id = data.get("primary_email_address_id")
+            for item in data.get("email_addresses", []):
+                verified = (item.get("verification") or {}).get("status") == "verified"
+                if verified and (item.get("id") == primary_id or email is None):
+                    email = str(item.get("email_address", "")).strip().lower() or email
+            first, last = data.get("first_name") or "", data.get("last_name") or ""
+            if first or last:
+                name = f"{first} {last}".strip()
+        except Exception as exc:
+            logger.warning("Clerk user lookup failed: %s", type(exc).__name__)
+
+    if not email:
+        raise HTTPException(status_code=401, detail="No verified email on this account.")
+
+    profile = {"email": email, "name": name or email.split("@")[0]}
+    _profile_cache[clerk_user_id] = (time.time(), profile)
+    return profile
+
+
+def _apply_admin_policy(user: User, db: Session) -> User:
+    """Promotes (never auto-demotes) accounts whose Clerk-verified email is in ADMIN_EMAILS."""
+    if user.role != "Administrator" and (user.email or "").lower() in _admin_emails():
+        user.role = "Administrator"
+        db.commit()
+    return user
+
+
+def _resolve_user(claims: Dict[str, Any], db: Session) -> User:
+    clerk_id = str(claims["sub"])
+    user = db.query(User).filter(User.id == clerk_id).first()
+    if user:
+        # Admin promotion needs the verified email, which is only fetched if a match is possible.
+        if user.role != "Administrator" and _admin_emails():
+            profile = _clerk_profile(clerk_id, claims)
+            if profile["email"] in _admin_emails():
+                user.role = "Administrator"
+                db.commit()
+        return user
+
+    profile = _clerk_profile(clerk_id, claims)
+    email = profile["email"]
+
+    # Existing legacy account with the same Clerk-VERIFIED email: reuse it.
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        return _apply_admin_policy(user, db)
+
+    user = User(
+        id=clerk_id,
+        email=email,
+        hashed_password="!clerk-managed",  # unusable as a password hash
+        full_name=profile["name"][:100],
+        role="Administrator" if email in _admin_emails() else "User",
+        workspace_name=f"{profile['name'].split(' ')[0]}'s Workspace"[:100],
+        credits_balance=_free_credits(),
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:  # two parallel first requests
+        db.rollback()
+        user = db.query(User).filter((User.id == clerk_id) | (User.email == email)).first()
+        if not user:
+            raise HTTPException(status_code=500, detail="Could not create account.")
+        return user
+    db.refresh(user)
+    try:
+        db.add(AuditLogEntry(user_id=user.id, action="USER_SIGNUP", details="Account created via Clerk"))
+        db.commit()
+    except Exception:
+        db.rollback()
+    return user
+
+
+# ------------------------------------------------------------------------------
+# Dependencies used by the other route modules
+# ------------------------------------------------------------------------------
+def _bearer(authorization: Optional[str]) -> Optional[str]:
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[7:].strip()
-    clerk_u = verify_clerk_token(token, db)
-    if clerk_u:
-        return clerk_u
+    return token or None
 
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user_id = payload.get("sub")
-        if user_id:
-            return db.query(User).filter(User.id == user_id).first()
-    except Exception:
+
+def get_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> User:
+    token = _bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required. Please sign in.")
+    return _resolve_user(_verify_clerk_jwt(token), db)
+
+
+def get_optional_current_user(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)) -> Optional[User]:
+    """No header -> guest (None). A header that is present but invalid is rejected, never silently treated as guest."""
+    token = _bearer(authorization)
+    if not token:
         return None
-    return None
+    return _resolve_user(_verify_clerk_jwt(token), db)
 
 
-@router.post("/signup")
-def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == req.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Account with this email already exists")
-
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(req.password.encode("utf-8"), salt).decode("utf-8")
-
-    user = User(
-        email=req.email,
-        hashed_password=hashed,
-        full_name=req.full_name,
-        workspace_name=req.workspace_name,
-        credits_balance=5000,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # Log action
-    log = AuditLogEntry(user_id=user.id, action="USER_SIGNUP", details=f"Account created for {user.email}")
-    db.add(log)
-    db.commit()
-
-    token = create_token(user.id, user.email)
-    return {"success": True, "token": token, "user": user.to_dict()}
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "Administrator":
+        raise HTTPException(status_code=403, detail="Administrator access required.")
+    return user
 
 
-@router.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-
-    if not bcrypt.checkpw(req.password.encode("utf-8"), user.hashed_password.encode("utf-8")):
-        raise HTTPException(status_code=400, detail="Invalid email or password")
-
-    # Log action
-    log = AuditLogEntry(user_id=user.id, action="USER_LOGIN", details=f"User logged in from web")
-    db.add(log)
-    db.commit()
-
-    token = create_token(user.id, user.email)
-    return {"success": True, "token": token, "user": user.to_dict()}
+# ------------------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------------------
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = None
+    workspace_name: Optional[str] = None
 
 
 @router.get("/me")
@@ -230,229 +274,18 @@ def get_me(user: User = Depends(get_current_user)):
 @router.put("/profile")
 def update_profile(req: UpdateProfileRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if req.full_name:
-        user.full_name = req.full_name
+        user.full_name = req.full_name.strip()[:100]
     if req.workspace_name:
-        user.workspace_name = req.workspace_name
+        user.workspace_name = req.workspace_name.strip()[:100]
     db.commit()
     return {"success": True, "user": user.to_dict()}
 
 
-# ------------------------------------------------------------------------------
-# Google OAuth & Phone OTP Authentication Endpoints
-# ------------------------------------------------------------------------------
-class GoogleLoginRequest(BaseModel):
-    credential: Optional[str] = None
-    email: Optional[EmailStr] = None
-    name: Optional[str] = "King Ghazi"
-    avatar_url: Optional[str] = None
-
-
-class PhoneSendOtpRequest(BaseModel):
-    phone_number: str = Field(..., description="Mobile number with country code, e.g. +923001234567")
-
-
-class PhoneVerifyOtpRequest(BaseModel):
-    phone_number: str = Field(...)
-    otp_code: str = Field(..., description="6-digit verification code")
-
-
-PHONE_OTP_STORE: Dict[str, Dict[str, Any]] = {}
-
-
-@router.post("/google")
-def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
-    """
-    Standard 1-Click Google OAuth login. Creates user account if first time, or logs in.
-    """
-    target_email = (req.email or "").strip().lower()
-    if not target_email or "@" not in target_email:
-        raise HTTPException(status_code=400, detail="A valid Google email is required.")
-
-    # If a Google ID token is provided, verify it directly against Google OAuth tokeninfo
-    if req.credential:
-        try:
-            import httpx
-            g_resp = httpx.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={req.credential}", timeout=5.0)
-            if g_resp.status_code == 200:
-                g_payload = g_resp.json()
-                verified_email = g_payload.get("email", "").strip().lower()
-                if verified_email:
-                    target_email = verified_email
-            else:
-                raise HTTPException(status_code=401, detail="Google authentication credential verification failed.")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(status_code=401, detail="Unable to verify Google credential with OAuth provider.")
-
-    user = db.query(User).filter(User.email == target_email).first()
-
-    if not user:
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(os.urandom(16), salt).decode("utf-8")
-        user = User(
-            email=target_email,
-            hashed_password=hashed,
-            full_name=req.name or target_email.split("@")[0].title(),
-            workspace_name=f"{target_email.split('@')[0].title()} Workspace",
-            credits_balance=5000,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        log = AuditLogEntry(user_id=user.id, action="GOOGLE_AUTH_SIGNUP", details=f"Google registered: {target_email}")
-        db.add(log)
-        db.commit()
-    else:
-        # Prevent account takeover: if user was created with a custom password and no Google token was provided,
-        # require password authentication or verified Google ID token.
-        is_google_account = db.query(AuditLogEntry).filter(
-            AuditLogEntry.user_id == user.id,
-            AuditLogEntry.action == "GOOGLE_AUTH_SIGNUP"
-        ).first() is not None or target_email.endswith("@cypherlabelguard.ai")
-
-        if not req.credential and not is_google_account:
-            raise HTTPException(
-                status_code=403,
-                detail="This account is secured with a password. Please sign in with your email and password, or provide a verified Google credential."
-            )
-
-        log = AuditLogEntry(user_id=user.id, action="GOOGLE_AUTH_LOGIN", details=f"Google logged in: {target_email}")
-        db.add(log)
-        db.commit()
-
-    token = create_token(user.id, user.email)
-    return {
-        "success": True,
-        "token": token,
-        "user": user.to_dict(),
-        "provider": "google",
-        "message": f"Successfully authenticated with Google as {user.email}",
-    }
-
-
-@router.post("/phone/send-otp")
-def send_phone_otp(req: PhoneSendOtpRequest):
-    """
-    Sends a 6-digit verification SMS OTP to user's phone number.
-    Uses cryptographically secure secrets and limits attempt rate.
-    """
-    phone = req.phone_number.strip().replace(" ", "")
-    if len(phone) < 10:
-        raise HTTPException(status_code=400, detail="Invalid phone number format.")
-
-    import secrets
-    otp_code = str(secrets.randbelow(900000) + 100000)
-    PHONE_OTP_STORE[phone] = {
-        "otp": otp_code,
-        "expires_at": time.time() + 300,  # 5 minutes validity
-        "attempts": 0,
-    }
-
-    resp = {
-        "success": True,
-        "phone_number": phone,
-        "sms_sent": True,
-        "message": f"6-digit SMS verification code dispatched to {phone}",
-    }
-    if not os.getenv("TWILIO_ACCOUNT_SID"):
-        resp["demo_otp"] = otp_code
-    return resp
-
-
-@router.post("/phone/verify-otp")
-def verify_phone_otp(req: PhoneVerifyOtpRequest, db: Session = Depends(get_db)):
-    """
-    Verifies the 6-digit phone OTP and logs user in or creates workspace.
-    """
-    phone = req.phone_number.strip().replace(" ", "")
-    record = PHONE_OTP_STORE.get(phone)
-
-    if not record:
-        raise HTTPException(status_code=400, detail="No OTP requested for this phone number. Please click Send Code first.")
-
-    if time.time() > record["expires_at"]:
-        PHONE_OTP_STORE.pop(phone, None)
-        raise HTTPException(status_code=400, detail="OTP has expired (validity: 5 minutes). Please request a new code.")
-
-    record["attempts"] = record.get("attempts", 0) + 1
-    if record["attempts"] > 5:
-        PHONE_OTP_STORE.pop(phone, None)
-        raise HTTPException(status_code=429, detail="Too many invalid attempts. Please request a new code.")
-
-    if req.otp_code.strip() != record["otp"]:
-        raise HTTPException(status_code=400, detail="Invalid 6-digit verification code. Please check and try again.")
-
-    # Verification successful - consume OTP
-    PHONE_OTP_STORE.pop(phone, None)
-
-    # Find or create user associated with this verified phone number
-    pseudo_email = f"phone_{phone.replace('+', '')}@cypherlabelguard.ai"
-    user = db.query(User).filter(User.email == pseudo_email).first()
-
-    if not user:
-        salt = bcrypt.gensalt()
-        hashed = bcrypt.hashpw(os.urandom(16), salt).decode("utf-8")
-        user = User(
-            email=pseudo_email,
-            hashed_password=hashed,
-            full_name=f"Verified Member ({phone[-4:]})",
-            workspace_name="Mobile Workspace",
-            credits_balance=7500,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        log = AuditLogEntry(user_id=user.id, action="PHONE_OTP_SIGNUP", details=f"Phone verified: {phone}")
-        db.add(log)
-        db.commit()
-
-    token = create_token(user.id, user.email)
-    return {
-        "success": True,
-        "token": token,
-        "user": user.to_dict(),
-        "provider": "phone_otp",
-        "message": f"Phone verified! Welcome {user.full_name}",
-    }
-
-
-
-# ------------------------------------------------------------------------------
-# Clerk.com Identity Synchronization & Commander Fast Unlock
-# ------------------------------------------------------------------------------
-
-class ClerkSyncRequest(BaseModel):
-    clerk_id: str
-    email: EmailStr
-    full_name: Optional[str] = "Clerk User"
-    image_url: Optional[str] = None
-
-
 @router.post("/clerk-sync")
-def sync_clerk_user(req: ClerkSyncRequest, db: Session = Depends(get_db)):
-    """Synchronizes an authenticated Clerk session user with the local database."""
-    user = db.query(User).filter((User.id == req.clerk_id) | (User.email == req.email)).first()
-    if not user:
-        user = User(
-            id=req.clerk_id,
-            email=req.email,
-            hashed_password="clerk_oauth_verified_account",
-            full_name=req.full_name or "Clerk User",
-            role="Administrator",
-            workspace_name="Clerk Workspace",
-            credits_balance=5000,
-        )
-        db.add(user)
-    else:
-        if req.full_name:
-            user.full_name = req.full_name
-    db.commit()
-    db.refresh(user)
-
-    internal_token = create_token(user.id, user.email)
+def sync_clerk_user(user: User = Depends(get_current_user)):
+    """Identity comes ONLY from the verified Clerk token in the Authorization header; the request
+    body is ignored and no app-issued token is returned. The frontend uses the Clerk session
+    token (getToken()) as its Bearer token."""
     return {
         "status": "synchronized",
         "user": {
@@ -463,43 +296,4 @@ def sync_clerk_user(req: ClerkSyncRequest, db: Session = Depends(get_db)):
             "role": user.role,
             "credits_balance": user.credits_balance,
         },
-        "token": internal_token,
-    }
-
-
-
-class CommanderUnlockRequest(BaseModel):
-    email: EmailStr = "kingghazi123580@gmail.com"
-    full_name: str = "King Ghazi"
-
-
-@router.post("/commander-unlock")
-def commander_fast_unlock(req: CommanderUnlockRequest, db: Session = Depends(get_db)):
-    """Issues an official 30-day Administrator Bearer token for Commander Direct Fast Access."""
-    user = db.query(User).filter(User.email == req.email).first()
-    if not user:
-        user = User(
-            email=req.email,
-            hashed_password="commander_direct_fast_unlock",
-            full_name=req.full_name or "King Ghazi",
-            role="Administrator",
-            workspace_name="Ghazi Workspace",
-            credits_balance=100000,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    token = create_token(user.id, user.email)
-    return {
-        "status": "unlocked",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role,
-            "workspace_name": user.workspace_name,
-            "credits_balance": user.credits_balance,
-        },
-        "token": token,
     }
