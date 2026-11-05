@@ -5,23 +5,29 @@ import {
   UserButton,
   useUser,
   useAuth,
-  useClerk,
 } from '@clerk/clerk-react';
 import { dark } from '@clerk/themes';
-import { ShieldCheck, UserCheck, KeyRound, Sparkles } from 'lucide-react';
+import { KeyRound, Sparkles, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 
-export const CLERK_PUBLISHABLE_KEY =
-  (typeof import.meta !== 'undefined' &&
-    import.meta.env &&
-    import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) ||
-  '';
+export function getClerkPublishableKey(): string {
+  if (typeof window !== 'undefined') {
+    const local = localStorage.getItem('clerk_pub_key');
+    if (local && (local.startsWith('pk_test_') || local.startsWith('pk_live_'))) {
+      return local;
+    }
+  }
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    const envKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+    if (envKey && (envKey.startsWith('pk_test_') || envKey.startsWith('pk_live_'))) {
+      return envKey;
+    }
+  }
+  return '';
+}
 
-export const isClerkConfigured = Boolean(
-  CLERK_PUBLISHABLE_KEY &&
-    (CLERK_PUBLISHABLE_KEY.startsWith('pk_test_') ||
-      CLERK_PUBLISHABLE_KEY.startsWith('pk_live_'))
-);
+export const CLERK_PUBLISHABLE_KEY = getClerkPublishableKey();
+export const isClerkConfigured = Boolean(CLERK_PUBLISHABLE_KEY);
 
 interface ClerkGatekeeperCardProps {
   onSuccess: (profile: {
@@ -32,7 +38,70 @@ interface ClerkGatekeeperCardProps {
   }) => void;
 }
 
-export function ClerkGatekeeperCard({ onSuccess }: ClerkGatekeeperCardProps) {
+// 1. Setup Form when Key has not been configured yet (NO CLERK HOOKS CALLED)
+function ClerkKeySetupForm() {
+  const [inputKey, setInputKey] = useState('');
+
+  const handleSavePublishableKey = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const clean = inputKey.trim();
+    if (!clean.startsWith('pk_test_') && !clean.startsWith('pk_live_')) {
+      toast.error('Publishable key must start with pk_test_... or pk_live_...');
+      return;
+    }
+    localStorage.setItem('clerk_pub_key', clean);
+    toast.success('Clerk Publishable Key saved! Activating Clerk...');
+    window.location.reload();
+  };
+
+  return (
+    <div className="rounded-2xl border border-emerald-500/30 bg-[#061009] p-6 text-emerald-200 shadow-xl">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-emerald-950/80 border border-emerald-500/50 flex items-center justify-center shrink-0">
+          <KeyRound className="h-5 w-5 text-emerald-400" />
+        </div>
+        <div>
+          <h4 className="font-bold text-white text-sm">Clerk.com One-Click Connect</h4>
+          <p className="text-[11px] text-emerald-400/70 font-mono">
+            Publishable Key (pk_test_...) is public & safe to enter
+          </p>
+        </div>
+      </div>
+
+      <p className="text-xs text-muted-foreground mb-4">
+        Apna Clerk <strong>Publishable Key</strong> paste karein (from <code className="text-cyan-300 font-mono">dashboard.clerk.com &rarr; API Keys</code>):
+      </p>
+
+      <form onSubmit={handleSavePublishableKey} className="space-y-3">
+        <div>
+          <input
+            type="text"
+            value={inputKey}
+            onChange={(e) => setInputKey(e.target.value)}
+            placeholder="pk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            className="w-full rounded-xl border border-emerald-500/40 bg-black/60 px-3.5 py-2.5 text-xs font-mono text-emerald-200 placeholder:text-emerald-900 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+          />
+        </div>
+        <button
+          type="submit"
+          className="w-full cursor-pointer rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 py-2.5 text-xs font-bold text-black shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all"
+        >
+          <Sparkles className="w-4 h-4 text-black" />
+          <span>Connect & Activate Clerk Auth</span>
+          <ArrowRight className="w-4 h-4 text-black" />
+        </button>
+      </form>
+
+      <div className="mt-4 pt-3 border-t border-emerald-900/40 text-[11px] text-muted-foreground flex items-center justify-between">
+        <span>Ya direct instant entry ke liye:</span>
+        <span className="text-cyan-300 font-semibold cursor-pointer">Commander Direct Access &uarr;</span>
+      </div>
+    </div>
+  );
+}
+
+// 2. Active Session Card when ClerkProvider is active (SAFE TO USE CLERK HOOKS)
+function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const { isLoaded, isSignedIn, user } = useUser();
   const { getToken } = useAuth();
@@ -49,7 +118,6 @@ export function ClerkGatekeeperCard({ onSuccess }: ClerkGatekeeperCardProps) {
       const syncWithBackend = async () => {
         try {
           const token = await getToken();
-          // Call backend clerk-sync endpoint
           const res = await fetch('/api/v2/auth/clerk-sync', {
             method: 'POST',
             headers: {
@@ -87,21 +155,6 @@ export function ClerkGatekeeperCard({ onSuccess }: ClerkGatekeeperCardProps) {
       syncWithBackend();
     }
   }, [isLoaded, isSignedIn, user, getToken, onSuccess]);
-
-  if (!isClerkConfigured) {
-    return (
-      <div className="rounded-2xl border border-amber-500/30 bg-amber-950/20 p-6 text-center text-amber-200">
-        <KeyRound className="mx-auto mb-3 h-8 w-8 text-amber-400" />
-        <h4 className="font-semibold text-white">Clerk Publishable Key Pending</h4>
-        <p className="mt-1 text-xs text-amber-200/80">
-          Paste your <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-amber-300">VITE_CLERK_PUBLISHABLE_KEY=pk_test_...</code> in your local <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-white">.env</code> file.
-        </p>
-        <p className="mt-3 text-[11px] text-muted-foreground">
-          You can use the Commander Direct Unlock or Email 2FA options below in the meantime.
-        </p>
-      </div>
-    );
-  }
 
   return (
     <div className="flex flex-col items-center justify-center">
@@ -179,10 +232,26 @@ export function ClerkGatekeeperCard({ onSuccess }: ClerkGatekeeperCardProps) {
   );
 }
 
+// 3. Exported Gatekeeper Card that safely handles configured vs unconfigured
+export function ClerkGatekeeperCard({ onSuccess }: ClerkGatekeeperCardProps) {
+  if (!isClerkConfigured) {
+    return <ClerkKeySetupForm />;
+  }
+  return <ClerkActiveCard onSuccess={onSuccess} />;
+}
+
+// 4. Exported Avatar that is safe from hook exceptions when Clerk is unconfigured
 export function ClerkUserAvatar() {
+  if (!isClerkConfigured) {
+    return null;
+  }
+  return <ClerkUserAvatarInner />;
+}
+
+function ClerkUserAvatarInner() {
   const { isLoaded, isSignedIn, user } = useUser();
 
-  if (!isClerkConfigured || !isLoaded || !isSignedIn || !user) {
+  if (!isLoaded || !isSignedIn || !user) {
     return null;
   }
 

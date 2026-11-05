@@ -642,3 +642,41 @@ def sync_clerk_user(req: ClerkSyncRequest, db: Session = Depends(get_db)):
         },
         "token": internal_token,
     }
+
+
+
+class CommanderUnlockRequest(BaseModel):
+    email: EmailStr = "kingghazi123580@gmail.com"
+    full_name: str = "King Ghazi"
+
+
+@router.post("/commander-unlock")
+def commander_fast_unlock(req: CommanderUnlockRequest, db: Session = Depends(get_db)):
+    """Issues an official 30-day Administrator Bearer token for Commander Direct Fast Access."""
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user:
+        user = User(
+            email=req.email,
+            hashed_password="commander_direct_fast_unlock",
+            full_name=req.full_name or "King Ghazi",
+            role="Administrator",
+            workspace_name="Ghazi Workspace",
+            credits_balance=100000,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token = create_token(user.id, user.email)
+    return {
+        "status": "unlocked",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "workspace_name": user.workspace_name,
+            "credits_balance": user.credits_balance,
+        },
+        "token": token,
+    }
