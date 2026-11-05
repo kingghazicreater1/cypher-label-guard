@@ -11,19 +11,42 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Response
+import logging
 from pydantic import BaseModel, Field
 
 from core.context import ExecutionContext
 from core.orchestrator import orchestrator
 from db.database import SessionLocal
 from db.models import User, JobRecord, AuditLogEntry
-from api.auth_routes import get_optional_current_user
+from api.auth_routes import get_optional_current_user, get_current_user
 from fastapi import APIRouter, HTTPException, Depends
 
 router = APIRouter(prefix="/api/v2/batch", tags=["Batch Labeling & Dynamic Criteria Engine"])
 
 # Ephemeral Volatile In-Memory Batch Registry (Zero-Retention compliant)
 BATCH_REGISTRY: Dict[str, Dict[str, Any]] = {}
+logger = logging.getLogger("CYPHER_LABEL_GUARD.Batch")
+
+# Finished batches are evicted after this many seconds to prevent unbounded memory growth.
+BATCH_TTL_SECONDS = int(os.getenv("BATCH_TTL_SECONDS", "3600"))
+
+
+def _evict_stale_batches() -> None:
+    now = time.time()
+    for bid in [
+        k for k, v in BATCH_REGISTRY.items()
+        if v.get("status") != "PROCESSING" and now - v.get("end_timestamp", now) > BATCH_TTL_SECONDS
+    ]:
+        BATCH_REGISTRY.pop(bid, None)
+
+
+def _get_owned_batch(batch_id: str, user: User) -> Dict[str, Any]:
+    """Return the batch only if it belongs to the caller (admins may see all)."""
+    b = BATCH_REGISTRY.get(batch_id)
+    if b is None or (b.get("owner_id") != user.id and user.role != "Administrator"):
+        # Same response for missing and foreign batches so IDs cannot be probed.
+        raise HTTPException(status_code=404, detail="Batch job not found.")
+    return b
 
 
 class CriterionItem(BaseModel):
@@ -54,6 +77,7 @@ async def parse_csv_batch(req: BatchParseRequest):
     Parses an incoming CSV string and returns detected column headers,
     row count, and the first 5 sample rows for column mapping.
     """
+    _evict_stale_batches()
     try:
         reader = csv.DictReader(io.StringIO(req.csv_text.strip()))
         headers = reader.fieldnames or []
@@ -221,15 +245,20 @@ async def _execute_batch_job(
                 batch_state["current_item"] = f"Row #{idx + 1}: {text_val[:35]}..."
             except Exception as row_err:
                 augmented_row = dict(row_data)
-                augmented_row["Overall_Confidence"] = "80.0%"
-                augmented_row["Parliament_Decision"] = "ERROR_FALLBACK"
+                logger.warning("Batch %s row %s failed: %s", batch_id, idx, type(row_err).__name__)
+                augmented_row["Overall_Confidence"] = "0.0%"
+                augmented_row["Parliament_Decision"] = "ERROR_UNVERIFIED"
                 labeled_rows.append(augmented_row)
+                batch_state["failed_rows"] = batch_state.get("failed_rows", 0) + 1
                 batch_state["completed_rows"] = len(labeled_rows)
+                batch_state["progress_pct"] = round((len(labeled_rows) / total) * 100.0, 1)
 
     tasks = [_process_single_row(i, row) for i, row in enumerate(rows)]
-    await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    worker_crashed = any(isinstance(r, BaseException) for r in results)
 
-    batch_state["status"] = "COMPLETED"
+    failed = batch_state.get("failed_rows", 0)
+    batch_state["status"] = "FAILED" if (worker_crashed or failed >= total) else "COMPLETED"
     batch_state["labeled_rows"] = labeled_rows
     batch_state["end_timestamp"] = time.time()
     batch_state["elapsed_seconds"] = round(time.time() - batch_state["start_timestamp"], 1)
@@ -237,8 +266,8 @@ async def _execute_batch_job(
     # Persist job record to database
     try:
         db = SessionLocal()
-        user = db.query(User).filter(User.id == user_id).first() if user_id else db.query(User).first()
-        target_uid = user.id if user else user_id
+        user = db.query(User).filter(User.id == user_id).first() if user_id else None
+        target_uid = user.id if user else None
         if target_uid:
             job_rec = JobRecord(
                 user_id=target_uid,
@@ -249,8 +278,8 @@ async def _execute_batch_job(
                 progress=100,
                 labels_count=total,
                 cost=f"${total * 0.001:.2f}",
-                consensus_label="CONFIRMED",
-                affirmative_votes=32,
+                consensus_label="CONFIRMED" if batch_state["status"] == "COMPLETED" and not failed else "PARTIAL_UNVERIFIED",
+                affirmative_votes=0,
                 trace_id=batch_id,
             )
             db.add(job_rec)
@@ -261,14 +290,14 @@ async def _execute_batch_job(
             ))
             db.commit()
         db.close()
-    except Exception:
-        pass
+    except Exception as persist_err:
+        logger.error("Batch %s persistence failed: %s", batch_id, type(persist_err).__name__)
 
 
 @router.post("/start")
 async def start_batch_processing(
     req: BatchStartRequest,
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ):
     """
     Initializes a multi-model background batch run over up to 1,000+ CSV items.
@@ -287,10 +316,12 @@ async def start_batch_processing(
 
         BATCH_REGISTRY[batch_id] = {
             "batch_id": batch_id,
+            "owner_id": user.id,
             "name": req.name,
             "status": "PROCESSING",
             "total_rows": len(rows),
             "completed_rows": 0,
+            "failed_rows": 0,
             "progress_pct": 0.0,
             "target_column": req.target_column,
             "criteria": criteria_dicts,
@@ -311,7 +342,7 @@ async def start_batch_processing(
                 target_column=req.target_column,
                 criteria=criteria_dicts,
                 depth_tier=req.depth_tier,
-                user_id=user.id if user else None,
+                user_id=user.id,
             )
         )
 
@@ -323,6 +354,8 @@ async def start_batch_processing(
             "status": "PROCESSING",
             "message": f"Parliament workers spawned. Processing {len(rows)} items across {len(req.criteria)} dynamic headings.",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start batch: {str(e)}")
 
@@ -331,14 +364,11 @@ async def start_batch_processing(
 # 4. Check Batch Status & Progress
 # ------------------------------------------------------------------------------
 @router.get("/status/{batch_id}")
-async def get_batch_status(batch_id: str):
+async def get_batch_status(batch_id: str, user: User = Depends(get_current_user)):
     """
     Polls real-time progress of an active or completed batch labeling run.
     """
-    if batch_id not in BATCH_REGISTRY:
-        raise HTTPException(status_code=404, detail="Batch job not found.")
-
-    b = BATCH_REGISTRY[batch_id]
+    b = _get_owned_batch(batch_id, user)
     preview_items = b["labeled_rows"][:5] if b["labeled_rows"] else []
     
     elapsed = round(time.time() - b["start_timestamp"], 1) if b["status"] == "PROCESSING" else b.get("elapsed_seconds", 0.0)
@@ -350,6 +380,7 @@ async def get_batch_status(batch_id: str):
         "status": b["status"],
         "total_rows": b["total_rows"],
         "completed_rows": b["completed_rows"],
+        "failed_rows": b.get("failed_rows", 0),
         "progress_pct": b["progress_pct"],
         "overall_confidence": b["overall_confidence"],
         "current_item": b.get("current_item", ""),
@@ -362,15 +393,12 @@ async def get_batch_status(batch_id: str):
 # 5. Download Completed Labeled CSV
 # ------------------------------------------------------------------------------
 @router.get("/download/{batch_id}")
-async def download_labeled_csv(batch_id: str):
+async def download_labeled_csv(batch_id: str, user: User = Depends(get_current_user)):
     """
     Exports the finalized CSV file with all original columns plus
     the newly generated confidence-scored Dynamic Criteria columns.
     """
-    if batch_id not in BATCH_REGISTRY:
-        raise HTTPException(status_code=404, detail="Batch job not found.")
-
-    b = BATCH_REGISTRY[batch_id]
+    b = _get_owned_batch(batch_id, user)
     rows = b.get("labeled_rows", [])
     if not rows:
         raise HTTPException(status_code=400, detail="Batch is still processing or has no rows available.")

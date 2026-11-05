@@ -40,6 +40,7 @@ import {
   Printer,
   CheckCheck,
   AlertTriangle,
+  AlertCircle,
   Video,
   Mic,
   FileCheck2,
@@ -65,7 +66,9 @@ import {
   getSampleDataset,
   startBatchJob,
   getBatchStatus,
-  getBatchDownloadUrl,
+  downloadBatchCsv,
+  isPermanentPollError,
+  NO_IMAGE_PLACEHOLDER,
   getSingleJob,
   startImageBatch,
   getImageBatchStatus,
@@ -845,8 +848,9 @@ function ParliamentProcessingModal({
 
     const progressTimer = setInterval(() => {
       setProgress((prev) => {
+        // Deterministic easing toward 95%; the bar only completes when the request actually returns.
         if (prev >= 95) return 95;
-        return prev + Math.floor(Math.random() * 8) + 4;
+        return Math.min(95, prev + Math.max(1, Math.round((95 - prev) * 0.1)));
       });
     }, 350);
 
@@ -1156,10 +1160,13 @@ export function NewJobScreen() {
   useEffect(() => {
     if (!imgBatchId) return;
     let stopped = false;
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 8; // ~16s of transient errors before giving up
     const tick = async () => {
       try {
         const s = await getImageBatchStatus(imgBatchId);
         if (stopped) return;
+        consecutiveFailures = 0;
         setImgBatchStatus(s);
         if (s.status !== 'PROCESSING') {
           stopped = true;
@@ -1167,8 +1174,15 @@ export function NewJobScreen() {
           await refreshJobs();
           await refreshBilling();
         }
-      } catch {
-        /* transient poll error: keep trying */
+      } catch (err) {
+        if (stopped) return;
+        consecutiveFailures += 1;
+        // Permanent errors (401/403/404, e.g. server restarted) or too many transient ones stop the loop.
+        if (isPermanentPollError(err) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          stopped = true;
+          clearInterval(timer);
+          toast.error('Lost connection to the batch run. Refresh the page to check its final status.');
+        }
       }
     };
     const timer = setInterval(tick, 2000);
@@ -3015,14 +3029,7 @@ function VisionLabeledImageStudio({
 
   const isDiscordantQA = hasDiscordance && !hasFallback;
 
-  const isWinImg =
-    (job.name && job.name.includes('WIN_20261017')) ||
-    (job.imageUrl && job.imageUrl.includes('WIN_20261017'));
-  const displayImgUrl =
-    job.imageUrl ||
-    (isWinImg
-      ? '/uploads/WIN_20261017_11_42_53_Pro.jpg'
-      : 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&auto=format&fit=crop&q=80');
+  const displayImgUrl = job.imageUrl || NO_IMAGE_PLACEHOLDER;
 
 
 
@@ -3301,7 +3308,7 @@ function VisionLabeledImageStudio({
                                   )}
                                 </td>
                                 <td className="text-muted-foreground text-[11px]">
-                                  {c.agreement || (isCritAnom ? '0 of 4 APIs (Rejected)' : '4 of 4 APIs (100%)')}
+                                  {c.agreement || (isCritAnom ? '0 of 4 APIs (Rejected)' : 'Not reported')}
                                 </td>
                                 <td className="text-right">
                                   <span className={`font-mono font-semibold ${isCritAnom ? 'text-destructive' : 'text-success'}`}>
@@ -3727,7 +3734,7 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
   const [fetchedJob, setFetchedJob] = useState<Job | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Robust lookup: match by id, job_number, clean number, or filename match (e.g. WIN_20261017)
+  // Exact lookup only (id, job_number, clean number or trace id): fuzzy name matching could open the wrong job.
   const cleanId = (jobId || '').replace(/^job_/, '').trim();
   const localJob = jobs.find(
     (j) =>
@@ -3735,23 +3742,29 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
       j.id === cleanId ||
       (j as any).job_number === jobId ||
       (j as any).job_number === cleanId ||
-      j.trace_id === jobId ||
-      (j.name && j.name.toLowerCase().includes(cleanId.toLowerCase())) ||
-      (cleanId.toLowerCase().includes('win_20261017') && j.name && j.name.includes('WIN_20261017'))
+      j.trace_id === jobId
   );
 
   useEffect(() => {
-    if (!localJob) {
-      setIsLoading(true);
-      getSingleJob(jobId)
-        .then((dbJob) => {
-          if (dbJob) {
-            setFetchedJob(dbJob);
-          }
-        })
-        .finally(() => setIsLoading(false));
-    }
-  }, [jobId, localJob]);
+    if (localJob) return;
+    let cancelled = false;
+    setIsLoading(true);
+    getSingleJob(jobId)
+      .then((dbJob) => {
+        if (!cancelled && dbJob) {
+          setFetchedJob(dbJob);
+        }
+      })
+      .catch(() => {
+        /* job stays unavailable; the "Job unavailable" screen explains it */
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, !!localJob]);
 
   const job = localJob || fetchedJob;
 
@@ -3760,17 +3773,32 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
     let interval: any = null;
     const isBatch = jobId.startsWith('batch_') || job?.type === 'CSV Batch';
 
+    let stopped = false;
     if (isBatch) {
+      let consecutiveFailures = 0;
+      const MAX_CONSECUTIVE_FAILURES = 8;
+      const stop = () => {
+        stopped = true;
+        if (interval) clearInterval(interval);
+      };
       const poll = async () => {
+        if (stopped) return;
         try {
           const st = await getBatchStatus(jobId);
+          if (stopped) return;
+          consecutiveFailures = 0;
           setBatchStatus(st);
           if (st.status === 'COMPLETED') {
             updateJob(jobId, 'Completed');
-            clearInterval(interval);
+            stop();
+          } else if (st.status === 'FAILED') {
+            updateJob(jobId, 'Failed');
+            stop();
           }
-        } catch {
-          // fallback
+        } catch (err) {
+          consecutiveFailures += 1;
+          // 401/403/404 (e.g. server restarted, registry is in memory) or repeated errors: stop polling.
+          if (isPermanentPollError(err) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) stop();
         }
       };
 
@@ -3779,6 +3807,7 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
     }
 
     return () => {
+      stopped = true;
       if (interval) clearInterval(interval);
     };
   }, [jobId]);
@@ -3874,7 +3903,7 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
               <Button
                 variant="default"
                 className="bg-primary text-primary-foreground font-medium text-xs gap-1.5"
-                onClick={() => window.open(getBatchDownloadUrl(job.id), '_blank')}
+                onClick={() => downloadBatchCsv(job.id).catch((e) => toast.error(e?.message || 'CSV download failed'))}
               >
                 <Download size={14} />
                 Download Labeled CSV with Confidence
@@ -4552,7 +4581,7 @@ function JobLabelsTab({
               <div className="mb-4 rounded-xl overflow-hidden bg-zinc-950 border border-border flex items-center justify-center p-3">
                 <div className="relative inline-block max-w-full">
                   <img
-                    src={job.imageUrl || '/uploads/WIN_20261017_11_42_53_Pro.jpg'}
+                    src={job.imageUrl || NO_IMAGE_PLACEHOLDER}
                     alt={job.name}
                     className="block max-w-full h-auto max-h-[360px] object-contain rounded-lg shadow-md select-none"
                   />
@@ -4665,7 +4694,7 @@ function JobLogsTab({
       time: '28.1ms',
       level: 'PARLIAMENT',
       tag: 'feat_14_connection_pool',
-      message: `Dispatched 32-seat multi-model matrix (Groq Llama-3.3-70B, Gemini 1.5 Pro, OpenRouter Vision, Together AI) across 500 socket pool.`,
+      message: `Dispatched 32-seat parliament matrix across the configured model providers via the managed connection pool.`,
     },
     {
       time: `${Math.round(durationMs * 0.45)}ms`,
@@ -4677,13 +4706,13 @@ function JobLogsTab({
       time: `${Math.round(durationMs * 0.70)}ms`,
       level: 'PARLIAMENT',
       tag: 'feat_04_subspace_voting',
-      message: `Subspace voting compiled. 4 of 4 model providers reached quorum on "${(job as any).consensus_label || job.name}".`,
+      message: `Subspace voting compiled. Consensus: "${(job as any).consensus_label || job.name}" (overall confidence ${overallConfidence}%).`,
     },
     {
       time: `${Math.round(durationMs * 0.82)}ms`,
       level: 'PARLIAMENT',
       tag: 'feat_09_weighted_tiebreak',
-      message: `Gated Adversarial Debate evaluated: Multi-model concordance check passed. Consensus converged.`,
+      message: `Gated Adversarial Debate evaluated. Final decision: ${String((job as any).consensus_label || job.status || 'PENDING')}.`,
     },
     {
       time: `${Math.round(durationMs * 0.92)}ms`,
@@ -4701,7 +4730,7 @@ function JobLogsTab({
       time: `${durationMs + 2}.5ms`,
       level: 'INFO',
       tag: 'feat_38_unified_output',
-      message: `Job #${(job as any).job_number || job.id.slice(0, 8)} finalized. Status: ${(job.status || 'COMPLETED').toUpperCase()} · Confidence: ${overallConfidence}% · Cost: ${job.cost || '$0.0003'}.`,
+      message: `Job #${(job as any).job_number || job.id.slice(0, 8)} finalized. Status: ${(job.status || 'COMPLETED').toUpperCase()} · Confidence: ${overallConfidence}% · Cost: ${job.cost || 'not recorded'}.`,
     },
   ];
 
