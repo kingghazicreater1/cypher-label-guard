@@ -42,6 +42,7 @@ def main():
         ("Suite E Strengthened Adversarial Re-ID Benchmark (Tiers 1, 2, 3)", ["python", "-m", "unittest", "tests/test_suite_e_adversarial_reid.py"]),
         ("Gated Adversarial Debate Protocol Suite (Feature 09)", ["python", "-m", "unittest", "tests/test_gated_adversarial_debate.py"]),
         ("Clerk Auth Security Suite (signature-verified, no backdoors)", ["python", "-m", "unittest", "tests/test_clerk_auth.py"]),
+        ("Audit Hardening Suite (batch ownership, WS auth, tenant-scoped telemetry)", ["python", "-m", "unittest", "tests/test_audit_hardening.py"]),
         ("Job #680488 Cascade Isolation & Fallback Rejection", ["python", "-m", "unittest", "tests/test_job_680488_cascade_isolation.py"]),
         ("Job #382356 Multi-Object Vision Detection", ["python", "-m", "unittest", "tests/test_job_382356_multiobject_detection.py"]),
         ("Comprehensive Multi-Modal CI Test Matrix (5 Modalities, Guards & Feature 38)", ["python", "-m", "unittest", "tests/test_multimodal_comprehensive_matrix.py"]),
