@@ -1,6 +1,6 @@
 # ==============================================================================
 # CypherLabelGuard CORE EDITION v2.0
-# Database Engine & Session Management (SQLite / PostgreSQL)
+# Database Engine & Session Management (SQLite / Supabase PostgreSQL)
 # ==============================================================================
 
 import os
@@ -12,6 +12,10 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = WORKSPACE_ROOT / "cypher_label_guard.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
+
+# Ensure postgresql:// scheme is used for SQLAlchemy compatibility (Supabase support)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # Configure SQLite engine with thread check disabled for multi-worker FastAPI
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
