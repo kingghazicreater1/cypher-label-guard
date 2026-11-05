@@ -64,6 +64,9 @@ frontend_backup_v2/
 # Scratch & Browser Automation Temporary Storage
 scratch/chrome-data/
 scratch/__pycache__/
+benchmark_raw.jsonl
+benchmark_meta.json
+benchmark_errors.csv
 
 # Logs & Diagnostics
 *.log
