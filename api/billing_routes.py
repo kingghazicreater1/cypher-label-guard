@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from db.database import get_db
 from db.models import User, PaymentMethod, Subscription, Transaction, AuditLogEntry
-from api.auth_routes import get_current_user, get_optional_current_user
+from api.auth_routes import get_current_user, get_optional_current_user, require_admin
 from typing import Optional
 
 router = APIRouter(prefix="/api/v2/billing", tags=["Billing & Payments"])
@@ -464,7 +464,7 @@ def get_commander_rates():
 
 
 @router.post("/rates")
-def update_commander_rates(req: CommanderRatesRequest, user: User = Depends(get_current_user)):
+def update_commander_rates(req: CommanderRatesRequest, user: User = Depends(require_admin)):
     """Admin endpoint to customize how fast credits decrease per label option."""
     COMMANDER_RATES["base_text_credits"] = req.base_text_credits
     COMMANDER_RATES["vision_inspection_credits"] = req.vision_inspection_credits

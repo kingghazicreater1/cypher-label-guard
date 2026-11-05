@@ -13,19 +13,17 @@ class TestApiServer(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = TestClient(app)
-        from db.database import SessionLocal
-        from db.models import User
-        from api.auth_routes import create_token
-        db = SessionLocal()
-        user = db.query(User).first()
-        if user:
-            cls.token = create_token(user.id, user.email)
-            cls.auth_headers = {"Authorization": f"Bearer {cls.token}"}
-        else:
-            cls.auth_headers = {}
-        db.close()
+        from tests.clerk_test_utils import ClerkTestAuth
 
+        cls.client = TestClient(app)
+        # Real Clerk-JWT verification path, with a locally generated RSA key (no network).
+        cls.clerk = ClerkTestAuth(admin_emails="api-suite-admin@example.test").start()
+        uid, _ = cls.clerk.new_identity()
+        cls.auth_headers = cls.clerk.headers(cls.clerk.token(uid, "api-suite-admin@example.test"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.clerk.stop()
     def test_01_health_endpoint(self):
         resp = self.client.get("/api/v2/health")
         self.assertEqual(resp.status_code, 200)

@@ -26,7 +26,7 @@ from core.orchestrator import orchestrator
 from core.registry import registry
 from db.database import init_db, SessionLocal, get_db
 from db.models import User, JobRecord, AuditLogEntry
-from api.auth_routes import router as auth_router, get_current_user, get_optional_current_user
+from api.auth_routes import router as auth_router, get_current_user, get_optional_current_user, require_admin
 from api.billing_routes import router as billing_router
 from api.history_routes import router as history_router
 from api.batch_routes import router as batch_router
@@ -1365,7 +1365,7 @@ async def get_prove_it_dossier(trace_id: str):
 @app.post("/api/v2/panic-flush")
 async def emergency_panic_flush(
     req: PanicFlushRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """
     Feature 21: Panic-Induced Salt Flush.

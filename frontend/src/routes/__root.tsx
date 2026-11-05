@@ -16,7 +16,7 @@ import { GuardianProvider } from "@/components/guardian/context";
 import { GuardianShell } from "@/components/guardian/shell";
 import { ClerkProvider } from "@clerk/clerk-react";
 import { dark } from "@clerk/themes";
-import { CLERK_PUBLISHABLE_KEY, isClerkConfigured } from "@/components/guardian/clerk-auth";
+import { CLERK_PUBLISHABLE_KEY, isClerkConfigured, ClerkSessionKeeper } from "@/components/guardian/clerk-auth";
 
 function NotFoundComponent() {
   return (
@@ -148,6 +148,7 @@ function RootComponent() {
             },
           }}
         >
+          <ClerkSessionKeeper />
           {appContent}
         </ClerkProvider>
       ) : (

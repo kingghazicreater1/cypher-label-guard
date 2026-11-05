@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   SignIn,
   SignUp,
   UserButton,
   useUser,
   useAuth,
+  useClerk,
 } from '@clerk/clerk-react';
 import { dark } from '@clerk/themes';
 import { KeyRound, Sparkles, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { registerClerkSession, unregisterClerkSession, refreshAuthToken } from '@/lib/auth-token';
 
 export function getClerkPublishableKey(): string {
   if (typeof window !== 'undefined') {
@@ -87,57 +89,46 @@ function ClerkKeySetupForm() {
 function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const { isLoaded, isSignedIn, user } = useUser();
-  const { getToken } = useAuth();
+  const syncedFor = useRef<string | null>(null);
 
-  // Automatic sync when Clerk user signs in
+  // Once Clerk reports a signed-in user, confirm with the backend. The backend trusts ONLY the
+  // signature-verified Clerk token, so a failed sync means NOT logged in (no local fallback).
   useEffect(() => {
-    if (isLoaded && isSignedIn && user) {
-      const email =
-        user.primaryEmailAddress?.emailAddress ||
-        user.emailAddresses?.[0]?.emailAddress ||
-        '';
-      const fullName = user.fullName || user.firstName || email.split('@')[0] || 'Clerk User';
+    if (!isLoaded || !isSignedIn || !user || syncedFor.current === user.id) return;
+    syncedFor.current = user.id;
 
-      const syncWithBackend = async () => {
-        try {
-          const token = await getToken();
-          const res = await fetch('/api/v2/auth/clerk-sync', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify({
-              clerk_id: user.id,
-              email: email || `${user.id}@clerk.user`,
-              full_name: fullName,
-              image_url: user.imageUrl,
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.token) {
-              localStorage.setItem('cypher_auth_token', data.token);
-            }
-          }
-        } catch {
-          // Fallback gracefully
+    (async () => {
+      const token = await refreshAuthToken();
+      if (!token) {
+        syncedFor.current = null;
+        toast.error('Could not obtain a Clerk session token. Please try again.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/v2/auth/clerk-sync', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: 'Sign-in could not be verified.' }));
+          throw new Error(err.detail || 'Sign-in could not be verified.');
         }
-
+        const data = await res.json();
         const profile = {
-          name: fullName,
-          email,
+          name: data.user?.full_name || user.fullName || 'User',
+          email: data.user?.email || '',
           authMethod: 'clerk' as const,
           isLoggedIn: true,
         };
         localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-        toast.success(`Verified via Clerk.com! Welcome, ${fullName}`);
+        toast.success(`Welcome, ${profile.name}`);
         onSuccess(profile);
-      };
-
-      syncWithBackend();
-    }
-  }, [isLoaded, isSignedIn, user, getToken, onSuccess]);
+      } catch (err: any) {
+        syncedFor.current = null;
+        toast.error(err?.message || 'Sign-in could not be verified.');
+      }
+    })();
+  }, [isLoaded, isSignedIn, user, onSuccess]);
 
   return (
     <div className="flex flex-col items-center justify-center space-y-3">
@@ -235,4 +226,45 @@ function ClerkUserAvatarInner() {
       />
     </div>
   );
+}
+
+// 5. Keeps a fresh Clerk session token available to the app's fetch helpers.
+// Clerk tokens live ~60s, so refresh on an interval and whenever the tab wakes up.
+export function ClerkSessionKeeper() {
+  if (!isClerkConfigured) {
+    return null;
+  }
+  return <ClerkSessionKeeperInner />;
+}
+
+function ClerkSessionKeeperInner() {
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { signOut } = useClerk();
+
+  useEffect(() => {
+    registerClerkSession(
+      () => getToken(),
+      () => signOut(),
+    );
+    return () => unregisterClerkSession();
+  }, [getToken, signOut]);
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return;
+    const refresh = () => void refreshAuthToken();
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [isLoaded, isSignedIn]);
+
+  return null;
 }
