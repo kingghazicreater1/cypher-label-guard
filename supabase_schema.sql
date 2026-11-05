@@ -12,9 +12,9 @@ CREATE TABLE IF NOT EXISTS public.users (
     id VARCHAR(36) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
     email VARCHAR(255) UNIQUE NOT NULL,
     hashed_password VARCHAR(255) NOT NULL DEFAULT '!clerk-managed',
-    full_name VARCHAR(100) NOT NULL DEFAULT 'King Ghazi',
+    full_name VARCHAR(100) NOT NULL DEFAULT 'Enterprise User',
     role VARCHAR(50) NOT NULL DEFAULT 'User',
-    workspace_name VARCHAR(100) NOT NULL DEFAULT 'Ghazi Workspace',
+    workspace_name VARCHAR(100) NOT NULL DEFAULT 'Enterprise Workspace',
     credits_balance INTEGER DEFAULT 500,
     stripe_customer_id VARCHAR(100),
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -35,7 +35,7 @@ BEGIN
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='full_name') THEN
-        ALTER TABLE public.users ADD COLUMN full_name VARCHAR(100) DEFAULT 'King Ghazi';
+        ALTER TABLE public.users ADD COLUMN full_name VARCHAR(100) DEFAULT 'Enterprise User';
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='role') THEN
@@ -43,7 +43,7 @@ BEGIN
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='workspace_name') THEN
-        ALTER TABLE public.users ADD COLUMN workspace_name VARCHAR(100) DEFAULT 'Ghazi Workspace';
+        ALTER TABLE public.users ADD COLUMN workspace_name VARCHAR(100) DEFAULT 'Enterprise Workspace';
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='credits_balance') THEN
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS public.payment_methods (
     last4 VARCHAR(4) NOT NULL,
     exp_month INTEGER NOT NULL,
     exp_year INTEGER NOT NULL,
-    cardholder_name VARCHAR(100) NOT NULL DEFAULT 'King Ghazi',
+    cardholder_name VARCHAR(100) NOT NULL DEFAULT 'Authorized Cardholder',
     is_default BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

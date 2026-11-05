@@ -17,6 +17,7 @@ class FallbackRegistry:
         re.compile(r"Industrial Precision Bearing Assembly", re.IGNORECASE),
         re.compile(r"Precision Industrial Component", re.IGNORECASE),
         re.compile(r"Precision Industrial Assembly", re.IGNORECASE),
+        re.compile(r"Target (Media|Visual|Audio|Video) Stream", re.IGNORECASE),
         re.compile(r"Canonical Industry Product Designation", re.IGNORECASE),
         re.compile(r"Generic (Visual|Text|Acoustic|Video) Specimen", re.IGNORECASE),
         re.compile(r"Standard Test Video Sequence", re.IGNORECASE),

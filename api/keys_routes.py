@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from db.models import User
-from api.auth_routes import get_current_user, get_optional_current_user
+from api.auth_routes import get_current_user, get_optional_current_user, require_admin
 from typing import Optional
 
 router = APIRouter(prefix="/api/v2/keys", tags=["BYOK API Keys"])
@@ -165,7 +165,7 @@ async def get_keys_status(user: Optional[User] = Depends(get_optional_current_us
 @router.post("/update")
 async def update_api_keys(
     req: KeyUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """
     Saves and activates Bring-Your-Own-Keys (BYOK) and desired model IDs.
@@ -232,7 +232,7 @@ async def update_api_keys(
 @router.post("/test")
 async def test_provider_key(
     req: KeyTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """
     Executes a real low-latency ping against the provider model using the user's
@@ -578,7 +578,7 @@ async def get_key_slots(user: Optional[User] = Depends(get_optional_current_user
 @router.post("/slots/test")
 async def test_slot_key(
     req: GenericSlotTestRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """
     Live tests any Model Name and API Key for a slot with a fast 1-token test prompt.
@@ -732,7 +732,7 @@ async def test_slot_key(
 @router.post("/slots/update")
 async def update_slot_key(
     req: GenericSlotUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """
     Saves the verified Model Name and API Key into .env permanently as XKEY# and activates it.

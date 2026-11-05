@@ -18,10 +18,10 @@ An enterprise-grade, privacy-first, zero-retention AI consensus, categorization,
 ---
 
 ## 🔒 The 4 Sacred Core Files (Never Broken)
-1. [`core/base_feature.py`](file:///c:/Users/Friends/Desktop/AV%20GUARDIAN/core/base_feature.py): Mother of all 38 plugins. Standardizes `async def execute(self, context: ExecutionContext) -> ExecutionContext`.
-2. [`core/context.py`](file:///c:/Users/Friends/Desktop/AV%20GUARDIAN/core/context.py): Immutable Context Bus with copy-on-write `.evolve()`, SHA-256 lineage hash chain, and `.purge()` zero-retention destructor.
-3. [`core/registry.py`](file:///c:/Users/Friends/Desktop/AV%20GUARDIAN/core/registry.py): Central directory dynamically discovering all plugins, reading `manifest.yaml`, and validating toggles.
-4. [`core/orchestrator.py`](file:///c:/Users/Friends/Desktop/AV%20GUARDIAN/core/orchestrator.py): Pipeline Conductor running Golden Flow stages, 30s cooldown circuit breaker, and 3-tier graceful degradation.
+1. [`core/base_feature.py`](core/base_feature.py): Mother of all 38 plugins. Standardizes `async def execute(self, context: ExecutionContext) -> ExecutionContext`.
+2. [`core/context.py`](core/context.py): Immutable Context Bus with copy-on-write `.evolve()`, SHA-256 lineage hash chain, and `.purge()` zero-retention destructor.
+3. [`core/registry.py`](core/registry.py): Central directory dynamically discovering all plugins, reading `manifest.yaml`, and validating toggles.
+4. [`core/orchestrator.py`](core/orchestrator.py): Pipeline Conductor running Golden Flow stages, 30s cooldown circuit breaker, and 3-tier graceful degradation.
 
 ---
 

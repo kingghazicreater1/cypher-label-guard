@@ -30,7 +30,7 @@ class AddCardRequest(BaseModel):
     exp_month: int = Field(..., ge=1, le=12)
     exp_year: int = Field(..., ge=2024, le=2040)
     cvc: str = Field(..., min_length=3, max_length=4)
-    cardholder_name: str = "King Ghazi"
+    cardholder_name: str = "Authorized Cardholder"
     make_default: bool = True
 
 
@@ -388,10 +388,27 @@ def purchase_credits(req: PurchaseCreditsRequest, user: User = Depends(get_curre
             detail=f"Payment Declined: Primary card ending in {primary_card.last4} is expired. Please update your card."
         )
 
-    auth_id = f"AUTH_{uuid.uuid4().hex[:8].upper()}"
-    charged_card_str = f"Paid via {primary_card.card_brand.upper()} ending in {primary_card.last4} [Gateway Auth: {auth_id}]"
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Commercial payment processing (Stripe) is not configured on this server. Contact workspace administrator to allocate credits."
+        )
 
-    # Add credits to balance
+    try:
+        # Process live payment via Stripe PaymentIntent / Charge
+        charge = stripe.Charge.create(
+            amount=int(cost * 100),
+            currency="usd",
+            description=f"CypherLabelGuard: {req.credit_amount:,} credits for {user.email}",
+            customer=user.stripe_customer_id or None,
+            source=primary_card.stripe_payment_method_id or None,
+        )
+        auth_id = charge.id
+        charged_card_str = f"Paid via {primary_card.card_brand.upper()} ending in {primary_card.last4} [Stripe Charge: {auth_id}]"
+    except Exception as e:
+        raise HTTPException(status_code=402, detail=f"Card processing declined by payment gateway: {str(e)}")
+
+    # Add credits to balance only after successful gateway capture
     user.credits_balance += req.credit_amount
 
     # Record invoice transaction
@@ -475,4 +492,35 @@ def update_commander_rates(req: CommanderRatesRequest, user: User = Depends(requ
         "success": True,
         "message": "Commander credit rates updated successfully!",
         "rates": COMMANDER_RATES,
+    }
+
+
+class GrantCreditsRequest(BaseModel):
+    user_id: str
+    credit_amount: int = Field(..., gt=0)
+    reason: Optional[str] = "Admin Grant"
+
+
+@router.post("/credits/grant")
+def grant_credits_admin(
+    req: GrantCreditsRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Allows administrators to allocate token credits to workspace accounts."""
+    target_user = db.query(User).filter(User.id == req.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    target_user.credits_balance += req.credit_amount
+    log = AuditLogEntry(
+        user_id=target_user.id,
+        action="CREDITS_GRANTED_BY_ADMIN",
+        details=f"Admin {admin.email} granted {req.credit_amount:,} credits. Reason: {req.reason}",
+    )
+    db.add(log)
+    db.commit()
+    return {
+        "success": True,
+        "message": f"Successfully granted {req.credit_amount:,} credits to {target_user.email}.",
+        "new_balance": target_user.credits_balance,
     }
