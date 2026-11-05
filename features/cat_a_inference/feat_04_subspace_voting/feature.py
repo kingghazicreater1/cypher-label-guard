@@ -785,6 +785,33 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                             ballot_data = self._clean_and_parse_json(raw)
                             provider_label = f"Groq ({seat_model})"
 
+                elif openrouter_key:
+                    openrouter_architectures = {
+                        "openai_gpt4": openrouter_model or "nvidia/nemotron-3.5-lightning:free",
+                        "anthropic_claude": "liquid/lfm-2.5-2.6b:free",
+                        "google_gemini": "meta-llama/llama-3.2-3b-instruct:free",
+                        "mistral_large": "mistralai/mistral-7b-instruct:free",
+                    }
+                    seat_model = openrouter_architectures.get(api, openrouter_model or "nvidia/nemotron-3.5-lightning:free")
+                    headers = {
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "HTTP-Referer": "https://cypherlabelguard.ai",
+                        "X-Title": "CypherLabelGuard",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "model": seat_model,
+                        "temperature": 0.0,
+                        "max_tokens": 1000,
+                        "messages": [{"role": "user", "content": prompt}],
+                    }
+                    async with acquire_provider_slot("openrouter", timeout=5.0):
+                        resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
+                        if resp.status_code == 200:
+                            raw = resp.json()["choices"][0]["message"]["content"]
+                            ballot_data = self._clean_and_parse_json(raw)
+                            provider_label = f"OpenRouter ({seat_model})"
+
             except Exception:
                 ballot_data = None
 
@@ -845,26 +872,39 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                     )
                 )
         else:
-            # If no API keys configured, generate realistic demo ballot so new users can test immediately!
-            demo_ballot = self._generate_demo_ballot(clause, api)
-            for dim in self.DIMENSIONS:
-                val = demo_ballot.get(dim, "CONFIRMED")
-                if dim == "confidence":
-                    val_str = f"{round(float(val) * 100)}%"
-                    conf_f = float(val)
-                else:
-                    val_str = str(val)
-                    conf_f = 0.96
-                records.append(
-                    VoteRecord(
-                        api=api,
-                        dimension=dim,
-                        vote=val_str,
-                        confidence=round(conf_f * calibration_offset, 2),
-                        reasoning=f"Demo Simulation ({api}). Connect free Groq API key in Settings to activate 100% Live AI inference.",
-                        latency_ms=18.5,
+            is_demo_mode = os.getenv("DEMO_MODE", "false").lower() in ("true", "1")
+            if is_demo_mode:
+                demo_ballot = self._generate_demo_ballot(clause, api)
+                for dim in self.DIMENSIONS:
+                    val = demo_ballot.get(dim, "CONFIRMED")
+                    if dim == "confidence":
+                        val_str = f"{round(float(val) * 100)}%"
+                        conf_f = float(val)
+                    else:
+                        val_str = str(val)
+                        conf_f = 0.96
+                    records.append(
+                        VoteRecord(
+                            api=api,
+                            dimension=dim,
+                            vote=val_str,
+                            confidence=round(conf_f * calibration_offset, 2),
+                            reasoning=f"[DEMO SIMULATION] ({api}). Connect free Groq API key in Settings to activate Live AI inference.",
+                            latency_ms=18.5,
+                        )
                     )
-                )
+            else:
+                for dim in self.DIMENSIONS:
+                    records.append(
+                        VoteRecord(
+                            api=api,
+                            dimension=dim,
+                            vote="ABSTAIN",
+                            confidence=0.0,
+                            reasoning=f"Provider seat unconfigured ({api}). Bring-Your-Own-Keys required.",
+                            latency_ms=latency_ms,
+                        )
+                    )
 
         return records
 
@@ -889,86 +929,11 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         mistral_key = os.getenv("MISTRAL_API_KEY")
 
-        # Pre-fetch universal gateway ballot ONCE if native keys are absent and a gateway (Groq or OpenRouter) is configured
-        cached_gateway_ballot = None
-        has_native_keys = bool(openai_key or anthropic_key or gemini_key or mistral_key)
-
-        if not has_native_keys and (groq_key or openrouter_key):
-            from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client, acquire_provider_slot
-            client = get_shared_client()
-            ballot_prompt = (
-                f"You are the parliamentary evaluator in CypherLabelGuard.\n"
-                f"Analyze this target clause across 8 dimensions:\n\"\"\"{clause[:3000]}\"\"\"\n"
-                f"{self.UNIVERSAL_TAXONOMY_GUIDE}\n"
-                "In your internal reasoning, keep it very brief (under 30 words).\n"
-                "Return a strict JSON object with keys:\n"
-                "- category: Exactly one of the 10 universal domains above\n"
-                "- confidence: float between 0.50 and 1.00\n"
-                "- subcategory: 1-3 words subtype\n"
-                "- anomaly: detected anomaly or 'Normal'\n"
-                "- sentiment: 'Positive', 'Neutral', 'Negative', or 'Critical'\n"
-                "- entity: primary entity or 'None'\n"
-                "- temporal: time sensitivity or 'None'\n"
-                "- risk: 'SAFE', 'LOW RISK', 'MEDIUM RISK', 'HIGH RISK', or 'VIOLATION'\n"
-                "Return JSON ONLY. No markdown code blocks."
-            )
-            timeout_val = 6.0 if getattr(context, "depth_tier", "") == "Fast" else 15.0
-
-            # 1. Prefer Groq gateway (ultra-fast, ~500 tok/sec, ~0.8s round-trip)
-            if groq_key:
-                groq_model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-                headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
-                payload = {
-                    "model": groq_model_name,
-                    "messages": [{"role": "user", "content": ballot_prompt}],
-                    "temperature": 0.0,
-                    "max_tokens": 1000,
-                }
-                try:
-                    async with acquire_provider_slot("groq", timeout=4.0):
-                        resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=timeout_val)
-                        if resp.status_code == 200:
-                            msg_obj = resp.json()["choices"][0]["message"]
-                            raw_content = msg_obj.get("content") or ""
-                            reasoning = msg_obj.get("reasoning") or ""
-                            cached_gateway_ballot = self._clean_and_parse_json(raw_content)
-                            if not cached_gateway_ballot and reasoning:
-                                cached_gateway_ballot = self._clean_and_parse_json(reasoning)
-                except Exception as e:
-                    logger.debug(f"Groq gateway ballot fetch error: {e}")
-
-            # 2. Fallback to OpenRouter gateway if Groq not configured or failed
-            if not cached_gateway_ballot and openrouter_key:
-                headers = {
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "HTTP-Referer": "https://cypherlabelguard.ai",
-                    "X-Title": "CypherLabelGuard",
-                    "Content-Type": "application/json",
-                }
-                payload = {
-                    "model": openrouter_model,
-                    "messages": [{"role": "user", "content": ballot_prompt}],
-                    "temperature": 0.0,
-                    "max_tokens": 1500,
-                }
-                try:
-                    async with acquire_provider_slot("openrouter", timeout=4.0):
-                        resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=timeout_val)
-                        if resp.status_code == 200:
-                            msg_obj = resp.json()["choices"][0]["message"]
-                            raw_content = msg_obj.get("content") or ""
-                            reasoning = msg_obj.get("reasoning") or ""
-                            cached_gateway_ballot = self._clean_and_parse_json(raw_content)
-                            if not cached_gateway_ballot and reasoning:
-                                cached_gateway_ballot = self._clean_and_parse_json(reasoning)
-                except Exception as e:
-                    logger.debug(f"OpenRouter gateway ballot fetch error: {e}")
-
-        # Schedule the 4 model ballots concurrently
+        # Schedule each parliamentary model seat concurrently to execute its distinct architecture
         tasks = []
         for api in self.MODELS:
             cal_offset = calibration_scalars.get(api, 1.0)
-            tasks.append(self._evaluate_model_ballot(api, text, salient_clause, cal_offset, cached_gateway_ballot))
+            tasks.append(self._evaluate_model_ballot(api, text, salient_clause, cal_offset, None))
 
         model_ballots = await asyncio.gather(*tasks)
         all_votes: List[VoteRecord] = [v for ballot in model_ballots for v in ballot]
@@ -1765,13 +1730,22 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             computed_conf = VERIFIED_CRITERIA_CONFIDENCE
 
                         elif c_intent == "PRODUCT_NAME":
-                            chosen_val = valid_primary or (valid_objs[0] if valid_objs else "Verified Specimen")
-                            agree_str = "4 of 4 APIs (Vision Specimen Concordant)"
-                            is_anom = False
-                            is_fallback_val = False
-                            is_unverified = False
-                            is_discordant = False
-                            computed_conf = VERIFIED_CRITERIA_CONFIDENCE
+                            if valid_primary or valid_objs:
+                                chosen_val = valid_primary or valid_objs[0]
+                                agree_str = "4 of 4 APIs (Vision Specimen Concordant)"
+                                is_anom = False
+                                is_fallback_val = False
+                                is_unverified = False
+                                is_discordant = False
+                                computed_conf = VERIFIED_CRITERIA_CONFIDENCE
+                            else:
+                                chosen_val = "[REJECTED: GENERIC_FALLBACK_UNVERIFIED]"
+                                agree_str = "0 of 4 APIs (Auto-Rejected: GENERIC_FALLBACK_UNVERIFIED)"
+                                is_anom = True
+                                is_fallback_val = True
+                                is_unverified = True
+                                is_discordant = False
+                                computed_conf = 0.0
 
                         elif c_intent == "QUALITY":
                             chosen_val = vis_quality or "High"

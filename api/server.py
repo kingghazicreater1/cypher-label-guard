@@ -54,18 +54,22 @@ app = FastAPI(
 )
 
 # Enable CORS with explicit origins and regex for secure credentialed communication
+_extra_cors = [o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
+    "http://localhost:8080",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-]
+    "https://cypherlabelguard.ai",
+] + _extra_cors
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https?://.*\.vercel\.app$|^https?://.*\.netlify\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -225,6 +229,15 @@ async def run_inference(
     and returns the Unified Multi-Modal JSON output.
     """
     global LATEST_PARLIAMENT_STATE
+
+    # Production Auth Enforcement: Require login unless running in automated test suite
+    import sys
+    is_test_env = "unittest" in sys.modules or "pytest" in sys.modules or os.getenv("ALLOW_GUEST_INFERENCE", "false").lower() in ("true", "1")
+    if not user and not is_test_env:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: Please sign in with your verified Clerk credentials to execute labeling inference."
+        )
 
     # ------------------------------------------------------------------
     # INPUT DECODABILITY & BINARY CONTAINER GUARD

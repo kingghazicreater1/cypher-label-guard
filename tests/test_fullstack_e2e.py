@@ -12,7 +12,15 @@ from api.server import app, PROVE_IT_REGISTRY, LATEST_PARLIAMENT_STATE
 class TestFullstackE2EIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        from tests.clerk_test_utils import ClerkTestAuth
         cls.client = TestClient(app)
+        cls.clerk = ClerkTestAuth(admin_emails="e2e-admin@example.test").start()
+        uid, _ = cls.clerk.new_identity()
+        cls.auth_headers = cls.clerk.headers(cls.clerk.token(uid, "e2e-admin@example.test"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.clerk.stop()
 
     def test_01_health_and_manifests_count(self):
         """Verify health check reports exactly 38 active features and system HEALTHY."""
@@ -80,7 +88,7 @@ class TestFullstackE2EIntegration(unittest.TestCase):
 
     def test_05_emergency_panic_salt_flush(self):
         """Verify emergency zero-retention salt flush clears all ephemeral buffers."""
-        res = self.client.post("/api/v2/panic-flush", json={"reason": "Audit Test"})
+        res = self.client.post("/api/v2/panic-flush", json={"reason": "Audit Test"}, headers=self.auth_headers)
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertTrue(data["success"])

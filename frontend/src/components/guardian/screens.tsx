@@ -1870,7 +1870,7 @@ export function SettingsScreen() {
         <Panel title="Workspace team">
           <div className="panel-body metric-list">
             <div>
-              <span>King Ghazi</span>
+              <span>Enterprise Administrator</span>
               <b>Administrator</b>
             </div>
             <div>
@@ -1902,7 +1902,7 @@ export function TenantsScreen() {
   const [expMonth, setExpMonth] = useState('12');
   const [expYear, setExpYear] = useState('2028');
   const [cvc, setCvc] = useState('');
-  const [cardholder, setCardholder] = useState('King Ghazi');
+  const [cardholder, setCardholder] = useState('Authorized Cardholder');
   const [isSubmittingCard, setIsSubmittingCard] = useState(false);
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
 
@@ -1930,7 +1930,7 @@ export function TenantsScreen() {
         exp_month: Number(expMonth),
         exp_year: Number(expYear),
         cvc: cvc.trim(),
-        cardholder_name: cardholder.trim() || 'King Ghazi',
+        cardholder_name: cardholder.trim() || 'Authorized Cardholder',
         make_default: true,
       });
       toast.success('Credit card authorized & attached successfully!');
@@ -2076,7 +2076,7 @@ export function TenantsScreen() {
   };
 
   const [items, setItems] = useState([
-    { name: 'Ghazi Workspace', plan: billingSummary?.subscription?.plan_name || 'Core', usage: 67, labels: '12,470', status: 'Active' },
+    { name: 'Enterprise Workspace', plan: billingSummary?.subscription?.plan_name || 'Core', usage: 67, labels: '12,470', status: 'Active' },
     { name: 'Product Operations', plan: 'Core', usage: 42, labels: '8,240', status: 'Active' },
     { name: 'Legal & Compliance', plan: 'Pro', usage: 81, labels: '24,980', status: 'Active' },
   ]);
@@ -2384,7 +2384,7 @@ export function TenantsScreen() {
           <div className="space-y-3 pt-2 text-xs">
             <label className="field block">
               Cardholder Name
-              <input value={cardholder} onChange={e => setCardholder(e.target.value)} placeholder="e.g. Muhammad Ghazi (Name on Card)" />
+              <input value={cardholder} onChange={e => setCardholder(e.target.value)} placeholder="e.g. Jane Doe (Name on Card)" />
             </label>
             <label className="field block">
               Card Number (SadaPay, NayaPay, or Test Card 4242...)

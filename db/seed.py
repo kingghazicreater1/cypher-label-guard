@@ -25,17 +25,17 @@ def seed_database():
     db = SessionLocal()
     try:
         # Check if default user exists
-        user = db.query(User).filter(User.email == "ghazi@cypherlabelguard.ai").first()
+        user = db.query(User).filter(User.email == "admin@cypherlabelguard.ai").first()
         if not user:
-            print("[*] Creating default admin user: ghazi@cypherlabelguard.ai...")
+            print("[*] Creating default admin user: admin@cypherlabelguard.ai...")
             user = User(
-                email="ghazi@cypherlabelguard.ai",
+                email="admin@cypherlabelguard.ai",
                 hashed_password=hash_password("GuardianPass2026!"),
-                full_name="King Ghazi",
+                full_name="Enterprise Administrator",
                 role="Workspace Administrator",
-                workspace_name="Ghazi Workspace",
+                workspace_name="Enterprise Workspace",
                 credits_balance=8500,  # 8,500 token credits (~$85.00)
-                stripe_customer_id="cus_test_ghazi_2026",
+                stripe_customer_id="cus_test_admin_2026",
             )
             db.add(user)
             db.commit()
@@ -142,7 +142,7 @@ def seed_database():
                 AuditLogEntry(
                     user_id=user.id,
                     action="WORKSPACE_INITIALIZED",
-                    details="Workspace 'Ghazi Workspace' configured with 38 core features",
+                    details="Workspace 'Enterprise Workspace' configured with 38 core features",
                     created_at=now - timedelta(days=44),
                 ),
                 AuditLogEntry(

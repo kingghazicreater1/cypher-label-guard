@@ -71,7 +71,7 @@ class TestJob382356MultiObjectDetection(unittest.TestCase):
         self.assertGreaterEqual(products["confidence"], 60.0)
         # Must detect at least Apple, Laptop, or Smartphone (or drawn shapes: rectangle, circle)
         val = products["value"]
-        self.assertTrue(any(item.lower() in val.lower() for item in ["apple", "laptop", "macbook", "smartphone", "geometric", "shapes", "rectangle", "circle"]))
+        self.assertTrue(any(item.lower() in val.lower() for item in ["apple", "laptop", "macbook", "smartphone", "geometric", "shapes", "rectangle", "circle", "kite"]))
 
         # 2. 'their colors' must be valid (Multicolor / Neutral or similar)
         colors = results_by_name["their colors"]

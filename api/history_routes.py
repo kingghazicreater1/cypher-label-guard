@@ -72,13 +72,13 @@ def get_job_history(
     status: Optional[str] = Query(None, description="Filter by status (Completed, Running, Paused, Failed)"),
     folder: Optional[str] = Query(None, description="Filter by folder/collection name"),
     limit: int = Query(50, ge=1, le=200),
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns persistent job history from the database with folder grouping."""
+    """Returns persistent job history from the database with strict user isolation."""
     query = db.query(JobRecord)
-    if user and getattr(user, "role", None) != "Administrator":
-        query = query.filter((JobRecord.user_id == user.id) | (JobRecord.user_id.is_(None)))
+    if getattr(user, "role", None) != "Administrator":
+        query = query.filter(JobRecord.user_id == user.id)
 
     if search:
         query = query.filter(
@@ -91,13 +91,9 @@ def get_job_history(
 
     jobs = query.order_by(JobRecord.created_at.desc()).limit(limit).all()
 
-    # Collect all unique folder names (from both FolderRecord and JobRecord)
+    # Collect all unique folder names
     rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
-    job_folders = set()
-    if user:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
-    else:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+    job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
     all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
 
     return {
@@ -111,28 +107,22 @@ def get_job_history(
 @router.get("/jobs/{job_id}")
 def get_single_job(
     job_id: str,
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns a specific job by job_number, uuid, trace_id, or name match."""
+    """Returns a specific job by job_number, uuid, or trace_id with strict user ownership."""
     clean_id = job_id.replace("job_", "").strip()
-    job = (
-        db.query(JobRecord)
-        .filter(
-            (JobRecord.job_number == clean_id)
-            | (JobRecord.id == clean_id)
-            | (JobRecord.trace_id == clean_id)
-            | (JobRecord.name.ilike(f"%{clean_id}%"))
-        )
-        .order_by(JobRecord.created_at.desc())
-        .first()
+    query = db.query(JobRecord).filter(
+        (JobRecord.job_number == clean_id)
+        | (JobRecord.id == clean_id)
+        | (JobRecord.trace_id == clean_id)
     )
+    if getattr(user, "role", None) != "Administrator":
+        query = query.filter(JobRecord.user_id == user.id)
+
+    job = query.order_by(JobRecord.created_at.desc()).first()
     if not job:
-        # Fallback to the latest job if requested ID doesn't exist
-        latest_job = db.query(JobRecord).order_by(JobRecord.created_at.desc()).first()
-        if latest_job:
-            return {"success": True, "job": latest_job.to_dict()}
-        return {"success": False, "job": None}
+        raise HTTPException(status_code=404, detail="Job not found or access denied.")
 
     return {"success": True, "job": job.to_dict()}
 
@@ -140,13 +130,13 @@ def get_single_job(
 @router.get("/audit-logs")
 def get_audit_logs(
     limit: int = Query(200, ge=1, le=1000),
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns immutable user activity audit log entries from the database."""
+    """Returns immutable user activity audit log entries from the database with strict user isolation."""
     query = db.query(AuditLogEntry)
-    if user and getattr(user, "role", None) != "Administrator":
-        query = query.filter((AuditLogEntry.user_id == user.id) | (AuditLogEntry.user_id.is_(None)))
+    if getattr(user, "role", None) != "Administrator":
+        query = query.filter(AuditLogEntry.user_id == user.id)
     logs = (
         query
         .order_by(AuditLogEntry.created_at.desc())
