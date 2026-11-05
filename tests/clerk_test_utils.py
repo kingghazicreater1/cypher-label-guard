@@ -84,3 +84,4 @@ class ClerkTestAuth:
     @staticmethod
     def headers(token):
         return {"Authorization": f"Bearer {token}"}
+
