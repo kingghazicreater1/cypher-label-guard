@@ -123,3 +123,4 @@ ON CONFLICT (name) DO NOTHING;
 -- ==============================================================================
 -- Schema creation complete! All 7 relational tables and indexes are ready.
 -- ==============================================================================
+
