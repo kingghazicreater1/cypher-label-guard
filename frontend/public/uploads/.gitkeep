@@ -1,0 +1,3 @@
+# User uploads and temporary files
+frontend/public/uploads/*
+!frontend/public/uploads/.gitkeep

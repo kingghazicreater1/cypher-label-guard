@@ -71,6 +71,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# User Media Uploads
+frontend/public/uploads/*
+!frontend/public/uploads/.gitkeep
+
+
 # OS & Editor Files
 .DS_Store
 Thumbs.db
