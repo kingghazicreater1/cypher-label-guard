@@ -80,7 +80,9 @@ class TestFullstackE2EIntegration(unittest.TestCase):
 
     def test_04_websocket_telemetry_flow(self):
         """Test WebSocket /ws/parliament handshake and live telemetry receiving."""
+        token = self.auth_headers["Authorization"].split(" ", 1)[1]
         with self.client.websocket_connect("/ws/parliament") as ws:
+            ws.send_json({"action": "AUTH", "token": token})
             init = ws.receive_json()
             self.assertEqual(init["event"], "CONNECTED")
             self.assertEqual(init["active_features"], 38)

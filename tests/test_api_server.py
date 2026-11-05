@@ -96,7 +96,15 @@ class TestApiServer(unittest.TestCase):
         self.assertEqual(data["providers"]["claude"]["max_slots"], 125)
         self.assertEqual(data["providers"]["gemini"]["max_slots"], 125)
     def test_06_parliament_latest_endpoint(self):
-        resp = self.client.get("/api/v2/parliament/latest")
+        # State is per user and the endpoint requires login: run an authenticated pass first.
+        self.assertEqual(self.client.get("/api/v2/parliament/latest").status_code, 401)
+        infer = self.client.post(
+            "/api/v2/infer",
+            json={"text": "Critical security breach detected in cloud infrastructure auth tokens.", "modality": "TEXT", "depth_tier": "Standard"},
+            headers=self.auth_headers,
+        )
+        self.assertEqual(infer.status_code, 200)
+        resp = self.client.get("/api/v2/parliament/latest", headers=self.auth_headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data["success"])

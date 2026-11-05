@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import { initialJobs, type Job, resolveHeadingBoundingBoxes, isLegacyStaticAnnotation } from './data';
 import { toast } from 'sonner';
 import {
@@ -12,6 +12,7 @@ import {
   getJobHistory,
   getFolders,
   createFolder,
+  NO_IMAGE_PLACEHOLDER,
   type GridTile,
   type ProveItDossier,
   type InferenceResult,
@@ -75,6 +76,11 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
   });
 
   const [paused, setPaused] = useState(false);
+  // Read by the long-lived WebSocket handler so pausing never tears down and recreates the socket.
+  const pausedRef = useRef(false);
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
   const [evidence, setEvidence] = useState<string | null>(null);
   const [activeDossier, setActiveDossier] = useState<ProveItDossier | null>(null);
   const [testDate, setTestDate] = useState('Oct 10, 2026');
@@ -137,8 +143,7 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
           const jobMap = new Map(currentJobs.map((j) => [j.id, j]));
           return dbJobs.map((dbJ) => {
             const existing = jobMap.get(dbJ.id);
-            const isWinImage = dbJ.name && dbJ.name.includes('WIN_20261017');
-            const resolvedImg = dbJ.imageUrl || existing?.imageUrl || (isWinImage ? '/uploads/WIN_20261017_11_42_53_Pro.jpg' : (dbJ.type === 'Image' ? 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800&auto=format&fit=crop&q=80' : undefined));
+            const resolvedImg = dbJ.imageUrl || existing?.imageUrl || (dbJ.type === 'Image' ? NO_IMAGE_PLACEHOLDER : undefined);
             const critList = (dbJ.criteria_results && dbJ.criteria_results.length > 0)
               ? dbJ.criteria_results
               : (dbJ.criteria && dbJ.criteria.length > 0 ? dbJ.criteria : (existing?.criteria_results || existing?.criteria || []));
@@ -148,7 +153,7 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
               ? dbJ.imageAnnotations
               : hasValidExistingAnnotations
               ? existing!.imageAnnotations
-              : (isWinImage || dbJ.type === 'Image')
+              : (dbJ.type === 'Image')
               ? resolveHeadingBoundingBoxes(critList, dbJ.anomaly_detected || false)
               : undefined;
             return {
@@ -188,7 +193,7 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = subscribeParliamentStream(
       (event) => {
-        if (!paused && event.grid_tiles && event.grid_tiles.length > 0) {
+        if (!pausedRef.current && event.grid_tiles && event.grid_tiles.length > 0) {
           setLiveGrid(event.grid_tiles);
         }
       },
@@ -207,7 +212,7 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
 
     return () => unsubscribe();
-  }, [paused]);
+  }, []);
 
   // When evidence ID changes, fetch the real Prove-It forensic dossier from backend
   useEffect(() => {

@@ -136,7 +136,8 @@ class HeadingClarifyRequest(BaseModel):
 # In-Memory Cache for Recent Prove-It Dossiers & Latest State (keyed by trace_id)
 # Purely ephemeral volatile RAM cache, strictly zero-retention compliant
 PROVE_IT_REGISTRY: Dict[str, Dict[str, Any]] = {}
-LATEST_PARLIAMENT_STATE: Dict[str, Any] = {}
+# Latest parliament state is kept per user so concurrent users never overwrite or read each other's data.
+LATEST_PARLIAMENT_STATE: Dict[str, Dict[str, Any]] = {}
 
 
 
@@ -144,28 +145,39 @@ LATEST_PARLIAMENT_STATE: Dict[str, Any] = {}
 # WebSocket Real-Time Telemetry Hub (Feature 31 Live Dashboard Ready)
 # ------------------------------------------------------------------------------
 class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
+    """Tracks authenticated WebSocket clients and delivers events only to the owning user."""
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
+    SEND_TIMEOUT_SECONDS = 3.0
+
+    def __init__(self):
+        self.active_connections: Dict[WebSocket, str] = {}
+
+    async def connect(self, websocket: WebSocket, owner_id: str):
+        self.active_connections[websocket] = owner_id
         logger.info(f"Frontend client connected to Parliament WebSocket. Total clients: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        if self.active_connections.pop(websocket, None) is not None:
             logger.info(f"Frontend client disconnected. Remaining clients: {len(self.active_connections)}")
 
-    async def broadcast(self, message: Dict[str, Any]):
-        dead_connections = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except Exception:
-                dead_connections.append(connection)
-        for dc in dead_connections:
-            self.disconnect(dc)
+    async def _send(self, connection: WebSocket, message: Dict[str, Any]) -> bool:
+        try:
+            await asyncio.wait_for(connection.send_json(message), timeout=self.SEND_TIMEOUT_SECONDS)
+            return True
+        except Exception:
+            return False
+
+    async def broadcast(self, message: Dict[str, Any], owner_id: Optional[str] = None):
+        """Send to the owner's connections only. With no owner nothing is sent (never leak across tenants)."""
+        if not owner_id:
+            return
+        targets = [c for c, oid in list(self.active_connections.items()) if oid == owner_id]
+        if not targets:
+            return
+        results = await asyncio.gather(*(self._send(c, message) for c in targets))
+        for conn, ok in zip(targets, results):
+            if not ok:
+                self.disconnect(conn)
 
 
 ws_manager = ConnectionManager()
@@ -183,7 +195,7 @@ async def broadcast_orchestrator_event(event_type: str, context: ExecutionContex
         "grid_tiles": context.metadata.get("parliament_grid_4x8", []),
         "timestamp": time.time(),
     }
-    await ws_manager.broadcast(packet)
+    await ws_manager.broadcast(packet, owner_id=context.tenant_id)
 
 orchestrator.add_event_listener(broadcast_orchestrator_event)
 
@@ -228,12 +240,10 @@ async def run_inference(
     Executes all 38 features across Categories A-F, runs the 32-vote parliament,
     and returns the Unified Multi-Modal JSON output.
     """
-    global LATEST_PARLIAMENT_STATE
 
     # Production Auth Enforcement: Require login unless running in automated test suite
-    import sys
-    is_test_env = "unittest" in sys.modules or "pytest" in sys.modules or os.getenv("ALLOW_GUEST_INFERENCE", "false").lower() in ("true", "1")
-    if not user and not is_test_env:
+    allow_guest = os.getenv("ALLOW_GUEST_INFERENCE", "false").lower() in ("true", "1")
+    if not user and not allow_guest:
         raise HTTPException(
             status_code=401,
             detail="Authentication required: Please sign in with your verified Clerk credentials to execute labeling inference."
@@ -524,7 +534,7 @@ async def run_inference(
 
     ctx = ExecutionContext(
         trace_id=pre_trace_id,
-        tenant_id=req.tenant_id or "default_tenant",
+        tenant_id=user.id if user else (req.tenant_id or "default_tenant"),
         depth_tier=chosen_depth,
         input_payload=initial_payload,
         metadata=init_metadata,
@@ -858,7 +868,8 @@ async def run_inference(
                 )
 
         # Update latest parliament state
-        LATEST_PARLIAMENT_STATE = {
+        _state_owner = user.id if user else "guest"
+        LATEST_PARLIAMENT_STATE[_state_owner] = {
             "trace_id": final_context.trace_id,
             "session_id": final_context.session_id,
             "unified_output": unified_out,
@@ -994,7 +1005,7 @@ async def run_inference(
                 eff_label = consensus_data.get("label", "CONFIRMED")
                 eff_votes = consensus_data.get("affirmative_votes", 0)
 
-            owner_user = billed_user or db_sess.query(User).first()
+            owner_user = billed_user  # never attribute a job to an arbitrary user
             new_job = JobRecord(
                 user_id=owner_user.id if owner_user else None,
                 job_number=job_num,
@@ -1051,9 +1062,8 @@ async def run_inference(
                 "trace_id": final_context.trace_id,
                 "timestamp": time.time(),
             }
-            LATEST_PARLIAMENT_STATE.clear()
-            LATEST_PARLIAMENT_STATE.update(state_payload)
-            await ws_manager.broadcast(state_payload)
+            LATEST_PARLIAMENT_STATE[_state_owner] = {**LATEST_PARLIAMENT_STATE.get(_state_owner, {}), **state_payload}
+            await ws_manager.broadcast(state_payload, owner_id=user.id if user else None)
 
         # Flush RAM vault for zero-retention guarantee (Feature 18 + Feature 4)
         BlindIngressMasker.flush_vault(final_context.trace_id)
@@ -1144,16 +1154,17 @@ async def get_criteria_templates():
 
 
 @app.get("/api/v2/parliament/latest")
-async def get_latest_parliament_state():
-    """Returns the most recent parliament consensus and 4x8 grid state."""
-    if not LATEST_PARLIAMENT_STATE:
+async def get_latest_parliament_state(user: User = Depends(get_current_user)):
+    """Returns the caller's most recent parliament consensus and 4x8 grid state."""
+    mine = LATEST_PARLIAMENT_STATE.get(user.id)
+    if not mine:
         return {
             "status": "AWAITING_FIRST_INFERENCE",
             "message": "No inference pass executed yet.",
         }
     return {
         "success": True,
-        "state": LATEST_PARLIAMENT_STATE,
+        "state": mine,
     }
 
 
@@ -1424,26 +1435,68 @@ async def get_connection_pools():
 # ------------------------------------------------------------------------------
 # WebSocket Endpoint for Live Parliament Dashboard (Feature 31)
 # ------------------------------------------------------------------------------
+WS_AUTH_TIMEOUT_SECONDS = 5.0
+WS_MAX_MESSAGE_BYTES = 4096
+WS_MAX_MESSAGES_PER_MINUTE = 60
+
+
 @app.websocket("/ws/parliament")
 async def websocket_parliament_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+    await websocket.accept()
+
+    # 1. Authenticate: the first message must be {"action": "AUTH", "token": "<Clerk session token>"}.
+    #    The token is sent in a message (not the URL) so it never ends up in access logs.
+    owner_id: Optional[str] = None
     try:
-        # Send initial handshake packet
+        first = await asyncio.wait_for(websocket.receive_text(), timeout=WS_AUTH_TIMEOUT_SECONDS)
+        if len(first) > 16384:
+            raise ValueError("auth message too large")
+        auth_msg = json.loads(first)
+        if auth_msg.get("action") != "AUTH" or not auth_msg.get("token"):
+            raise ValueError("missing auth")
+        from api.auth_routes import _verify_clerk_jwt, _resolve_user
+        claims = _verify_clerk_jwt(str(auth_msg["token"]))
+        db_sess = SessionLocal()
+        try:
+            owner_id = _resolve_user(claims, db_sess).id
+        finally:
+            db_sess.close()
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        return
+    except Exception:
+        try:
+            await websocket.close(code=4401)
+        except Exception:
+            pass
+        return
+
+    await ws_manager.connect(websocket, owner_id)
+    window_start = time.time()
+    msg_count = 0
+    try:
         await websocket.send_json({
             "event": "CONNECTED",
             "message": "Connected to CypherLabelGuard Live Parliament Telemetry Stream",
             "active_features": len(registry.list_active_features()),
-            "grid_tiles": LATEST_PARLIAMENT_STATE.get("parliament_grid", []),
+            "grid_tiles": LATEST_PARLIAMENT_STATE.get(owner_id, {}).get("parliament_grid", []),
             "timestamp": time.time(),
         })
         while True:
-            # Keep connection alive; accept any inbound control messages from frontend
             data = await websocket.receive_text()
+            now = time.time()
+            if now - window_start > 60:
+                window_start, msg_count = now, 0
+            msg_count += 1
+            if msg_count > WS_MAX_MESSAGES_PER_MINUTE or len(data) > WS_MAX_MESSAGE_BYTES:
+                await websocket.close(code=1008)
+                break
             try:
                 msg = json.loads(data)
-                if msg.get("action") == "PING":
+                if isinstance(msg, dict) and msg.get("action") == "PING":
                     await websocket.send_json({"event": "PONG", "timestamp": time.time()})
-            except Exception:
-                pass
+            except ValueError:
+                logger.debug("Ignoring non-JSON WebSocket control message")
     except WebSocketDisconnect:
+        pass
+    finally:
         ws_manager.disconnect(websocket)
