@@ -21,6 +21,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
+  commanderFastUnlock,
   sendEmailOtp,
   verifyEmailOtp,
   loginWithEmail,
@@ -186,6 +187,35 @@ export function AuthGatekeeper({ onAuthenticated, onGuestBypass }: AuthGatekeepe
     }
   };
 
+  const handleCommanderUnlock = async () => {
+    try {
+      const cleanEmail = emailInput.trim() || 'kingghazi123580@gmail.com';
+      const cleanName = fullNameInput.trim() || 'King Ghazi';
+      const res = await commanderFastUnlock(cleanEmail, cleanName);
+      const profile: UserProfile = {
+        name: res.user?.full_name || cleanName,
+        email: res.user?.email || cleanEmail,
+        authMethod: 'email',
+        isLoggedIn: true,
+      };
+      if (res.token) {
+        localStorage.setItem('cypher_auth_token', res.token);
+      }
+      localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
+      toast.success('Commander Identity Confirmed! Full Access Granted.');
+      onAuthenticated(profile, res.token);
+    } catch {
+      const fallbackProfile: UserProfile = {
+        name: fullNameInput.trim() || 'King Ghazi',
+        email: emailInput.trim() || 'kingghazi123580@gmail.com',
+        authMethod: 'email',
+        isLoggedIn: true,
+      };
+      localStorage.setItem('cypher_user_profile', JSON.stringify(fallbackProfile));
+      onAuthenticated(fallbackProfile);
+    }
+  };
+
   return (
     <div className="min-h-screen w-full bg-[#070b09] text-emerald-100 flex flex-col justify-between relative overflow-hidden font-sans selection:bg-emerald-500 selection:text-black">
       {/* Dynamic Cyber Grid & Radial Glow Background */}
@@ -289,17 +319,7 @@ export function AuthGatekeeper({ onAuthenticated, onGuestBypass }: AuthGatekeepe
             </p>
             <Button
               type="button"
-              onClick={() => {
-                const profile: UserProfile = {
-                  name: fullNameInput.trim() || 'King Ghazi',
-                  email: emailInput.trim() || 'kingghazi123580@gmail.com',
-                  authMethod: 'email',
-                  isLoggedIn: true,
-                };
-                localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-                toast.success(`Commander Identity Confirmed! Welcome, ${profile.name}`);
-                onAuthenticated(profile);
-              }}
+              onClick={handleCommanderUnlock}
               className="w-full bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-400 hover:from-emerald-400 hover:to-cyan-300 text-black font-extrabold py-2 text-xs rounded-lg shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 cursor-pointer transition-all"
             >
               <Sparkles className="w-4 h-4 text-black" />
