@@ -8,6 +8,7 @@ import {
 } from '@clerk/clerk-react';
 import { dark } from '@clerk/themes';
 import { KeyRound, Sparkles, ArrowRight } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 
 export function getClerkPublishableKey(): string {
@@ -55,21 +56,21 @@ function ClerkKeySetupForm() {
   };
 
   return (
-    <div className="rounded-2xl border border-emerald-500/30 bg-[#061009] p-6 text-emerald-200 shadow-xl">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-emerald-950/80 border border-emerald-500/50 flex items-center justify-center shrink-0">
-          <KeyRound className="h-5 w-5 text-emerald-400" />
+    <div className="rounded-lg border border-border bg-card p-5 text-foreground space-y-4">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-md bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+          <KeyRound className="h-4 w-4 text-primary" />
         </div>
         <div>
-          <h4 className="font-bold text-white text-sm">Clerk.com One-Click Connect</h4>
-          <p className="text-[11px] text-emerald-400/70 font-mono">
+          <h4 className="font-semibold text-xs text-foreground font-display">Clerk.com Connection</h4>
+          <p className="text-[11px] text-muted-foreground font-mono">
             Publishable Key (pk_test_...) is public & safe to enter
           </p>
         </div>
       </div>
 
-      <p className="text-xs text-muted-foreground mb-4">
-        Apna Clerk <strong>Publishable Key</strong> paste karein (from <code className="text-cyan-300 font-mono">dashboard.clerk.com &rarr; API Keys</code>):
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Enter your Clerk <strong>Publishable Key</strong> below (from <code className="text-primary font-mono text-[11px]">dashboard.clerk.com &rarr; API Keys</code>):
       </p>
 
       <form onSubmit={handleSavePublishableKey} className="space-y-3">
@@ -79,23 +80,18 @@ function ClerkKeySetupForm() {
             value={inputKey}
             onChange={(e) => setInputKey(e.target.value)}
             placeholder="pk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-            className="w-full rounded-xl border border-emerald-500/40 bg-black/60 px-3.5 py-2.5 text-xs font-mono text-emerald-200 placeholder:text-emerald-900 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs font-mono text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
           />
         </div>
-        <button
+        <Button
           type="submit"
-          className="w-full cursor-pointer rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 py-2.5 text-xs font-bold text-black shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all"
+          className="w-full text-xs font-semibold h-9 gap-2"
         >
-          <Sparkles className="w-4 h-4 text-black" />
+          <Sparkles className="w-3.5 h-3.5" />
           <span>Connect & Activate Clerk Auth</span>
-          <ArrowRight className="w-4 h-4 text-black" />
-        </button>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </Button>
       </form>
-
-      <div className="mt-4 pt-3 border-t border-emerald-900/40 text-[11px] text-muted-foreground flex items-center justify-between">
-        <span>Ya direct instant entry ke liye:</span>
-        <span className="text-cyan-300 font-semibold cursor-pointer">Commander Direct Access &uarr;</span>
-      </div>
     </div>
   );
 }
@@ -157,16 +153,16 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
   }, [isLoaded, isSignedIn, user, getToken, onSuccess]);
 
   return (
-    <div className="flex flex-col items-center justify-center">
+    <div className="flex flex-col items-center justify-center space-y-3">
       {/* Clerk Mode Toggle */}
-      <div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-black/40 p-1">
+      <div className="flex items-center gap-1 rounded-md border border-border bg-secondary/50 p-1 w-full max-w-sm">
         <button
           type="button"
           onClick={() => setAuthMode('signin')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-all ${
+          className={`flex-1 rounded py-1 text-xs font-medium transition-all text-center ${
             authMode === 'signin'
-              ? 'bg-emerald-500 text-black shadow-md shadow-emerald-500/20 font-semibold'
-              : 'text-muted-foreground hover:text-white'
+              ? 'bg-background text-foreground shadow-sm font-semibold'
+              : 'text-muted-foreground hover:text-foreground'
           }`}
         >
           Clerk Sign In
@@ -174,10 +170,10 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
         <button
           type="button"
           onClick={() => setAuthMode('signup')}
-          className={`rounded-lg px-4 py-1.5 text-xs font-medium transition-all ${
+          className={`flex-1 rounded py-1 text-xs font-medium transition-all text-center ${
             authMode === 'signup'
-              ? 'bg-emerald-500 text-black shadow-md shadow-emerald-500/20 font-semibold'
-              : 'text-muted-foreground hover:text-white'
+              ? 'bg-background text-foreground shadow-sm font-semibold'
+              : 'text-muted-foreground hover:text-foreground'
           }`}
         >
           Create Clerk Account
@@ -185,24 +181,18 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
       </div>
 
       {/* Clerk UI Component Container */}
-      <div className="clerk-container w-full max-w-md overflow-hidden rounded-2xl border border-emerald-500/30 bg-[#090f0b]/95 p-2 shadow-2xl backdrop-blur-xl">
+      <div className="clerk-container w-full max-w-md overflow-hidden rounded-lg border border-border bg-card p-2 shadow-sm">
         {authMode === 'signin' ? (
           <SignIn
             routing="hash"
             appearance={{
               baseTheme: dark,
               variables: {
-                colorPrimary: '#10b981',
-                colorBackground: '#090f0b',
-                colorInputBackground: '#0c1610',
-                colorInputText: '#ecfdf5',
-                colorText: '#ffffff',
+                colorPrimary: 'oklch(0.515 0.222 262)',
+                colorBackground: 'transparent',
               },
               elements: {
                 card: 'border-0 bg-transparent shadow-none',
-                footerAction: 'text-emerald-400 hover:text-emerald-300',
-                formButtonPrimary:
-                  'bg-emerald-500 hover:bg-emerald-400 text-black font-semibold shadow-lg shadow-emerald-500/20',
               },
             }}
           />
@@ -212,17 +202,11 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
             appearance={{
               baseTheme: dark,
               variables: {
-                colorPrimary: '#10b981',
-                colorBackground: '#090f0b',
-                colorInputBackground: '#0c1610',
-                colorInputText: '#ecfdf5',
-                colorText: '#ffffff',
+                colorPrimary: 'oklch(0.515 0.222 262)',
+                colorBackground: 'transparent',
               },
               elements: {
                 card: 'border-0 bg-transparent shadow-none',
-                footerAction: 'text-emerald-400 hover:text-emerald-300',
-                formButtonPrimary:
-                  'bg-emerald-500 hover:bg-emerald-400 text-black font-semibold shadow-lg shadow-emerald-500/20',
               },
             }}
           />
@@ -260,10 +244,6 @@ function ClerkUserAvatarInner() {
       <UserButton
         appearance={{
           baseTheme: dark,
-          variables: {
-            colorPrimary: '#10b981',
-            colorBackground: '#0c1610',
-          },
         }}
       />
     </div>

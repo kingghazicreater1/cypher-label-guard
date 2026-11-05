@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { toast } from 'sonner';
 import { useGuardian } from './context';
 import { providers, privacyMethods, featureGroups, exportFile } from './data';
-import { addCreditCard, deleteCreditCard, setDefaultCreditCard, changeSubscriptionPlan, purchaseTokenCredits, getInvoices, getAuditLogs, getKeysStatus, updateKeys, testProviderKey, getKeySlots, updateKeySlot, testKeySlot, getCommanderRates, updateCommanderRates, getSmtpStatus, testSmtpConnection, saveSmtpConfig, getDashboardAnalytics, type DashboardAnalyticsResponse, type InvoiceItem, type KeysStatusResponse, type KeySlotInfo, type CommanderRates } from '@/lib/api';
+import { addCreditCard, deleteCreditCard, setDefaultCreditCard, changeSubscriptionPlan, purchaseTokenCredits, getInvoices, getAuditLogs, getKeysStatus, updateKeys, testProviderKey, getKeySlots, updateKeySlot, testKeySlot, getCommanderRates, updateCommanderRates, getDashboardAnalytics, type DashboardAnalyticsResponse, type InvoiceItem, type KeysStatusResponse, type KeySlotInfo, type CommanderRates } from '@/lib/api';
 import { PageHeading, Panel, Status, TabBar, DataIcon, Kpi, Progress, ParliamentOrbit, PeriodControl } from './common';
 import { ThroughputChart, CostChart } from './charts';
 export function LabelsScreen() {
@@ -1201,81 +1201,6 @@ export function SettingsScreen() {
   });
   const [savingRates, setSavingRates] = useState(false);
 
-  // Free Gmail SMTP State
-  const [smtpStatus, setSmtpStatus] = useState<any>(null);
-  const [smtpUser, setSmtpUser] = useState('');
-  const [smtpPassword, setSmtpPassword] = useState('');
-  const [smtpFromName, setSmtpFromName] = useState('CypherLabelGuard Security');
-  const [testingSmtp, setTestingSmtp] = useState(false);
-  const [savingSmtp, setSavingSmtp] = useState(false);
-  const [smtpTestResult, setSmtpTestResult] = useState<any>(null);
-
-  const loadSmtpStatus = () => {
-    getSmtpStatus()
-      .then((res) => {
-        if (res) {
-          setSmtpStatus(res);
-          if (res.user_configured && res.masked_user) {
-            setSmtpUser((prev) => prev || res.masked_user);
-          }
-          if (res.from_name) {
-            setSmtpFromName((prev) => prev || res.from_name);
-          }
-        }
-      })
-      .catch(() => {});
-  };
-
-  const handleTestSmtp = async () => {
-    if (!smtpUser || !smtpPassword) {
-      toast.error('Please enter both your Gmail address and 16-character App Password');
-      return;
-    }
-    setTestingSmtp(true);
-    try {
-      const res = await testSmtpConnection({
-        user: smtpUser,
-        password: smtpPassword,
-        host: 'smtp.gmail.com',
-        port: 587,
-      });
-      setSmtpTestResult(res);
-      if (res.success) {
-        toast.success('Gmail SMTP connection verified! Live TLS handshake succeeded.');
-      } else {
-        toast.error(`SMTP test failed: ${res.message}`);
-      }
-    } catch (err: any) {
-      toast.error(`SMTP test error: ${err.message}`);
-    } finally {
-      setTestingSmtp(false);
-    }
-  };
-
-  const handleSaveSmtp = async () => {
-    if (!smtpUser || !smtpPassword) {
-      toast.error('Please enter both your Gmail address and 16-character App Password');
-      return;
-    }
-    setSavingSmtp(true);
-    try {
-      await saveSmtpConfig({
-        user: smtpUser,
-        password: smtpPassword,
-        host: 'smtp.gmail.com',
-        port: 587,
-        from_name: smtpFromName || 'CypherLabelGuard Security',
-      });
-      toast.success('Gmail SMTP credentials saved permanently to .env! Live OTP dispatch enabled.');
-      setSmtpPassword('');
-      loadSmtpStatus();
-    } catch (err: any) {
-      toast.error(`Failed to save SMTP credentials: ${err.message}`);
-    } finally {
-      setSavingSmtp(false);
-    }
-  };
-
   const total = featureGroups.reduce((sum, g) => sum + g.features.length, 0);
 
   const loadSlots = () => {
@@ -1306,7 +1231,6 @@ export function SettingsScreen() {
   useEffect(() => {
     loadSlots();
     loadCommanderRates();
-    loadSmtpStatus();
   }, []);
 
   const handleTestSlot = async (slotId: string) => {
@@ -1399,7 +1323,6 @@ export function SettingsScreen() {
       <TabBar
         tabs={[
           'Key Slots (BYOK #1 to #4)',
-          '📧 Free Gmail SMTP (Email 2FA / OTP)',
           '🎛️ Credit Rates (Commander Control)',
           'Feature catalog',
           'Voting thresholds',
@@ -1693,189 +1616,6 @@ export function SettingsScreen() {
                 >
                   Test All 4 Key Slots
                 </Button>
-              </div>
-            </div>
-          </Panel>
-        </div>
-      ) : tab === '📧 Free Gmail SMTP (Email 2FA / OTP)' ? (
-        <div className="space-y-6">
-          <Panel
-            title="Free Gmail SMTP Engine (Standard Python smtplib - Zero Cost)"
-            icon={<Mail className="text-primary" />}
-            action={
-              <span className="live-pill">
-                <span
-                  className={`dot ${
-                    smtpStatus?.is_configured ? 'text-success' : 'text-warning'
-                  }`}
-                />
-                {smtpStatus?.is_configured
-                  ? 'SMTP LIVE & READY (smtp.gmail.com:587)'
-                  : 'SETUP REQUIRED (DEV MODE ACTIVE)'}
-              </span>
-            }
-          >
-            <div className="panel-body max-w-3xl space-y-6">
-              {/* Educational Banner */}
-              <div className="p-4 rounded-lg bg-primary/5 border border-primary/20 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded text-xs font-bold bg-primary text-primary-foreground tracking-wider uppercase">
-                    Zero Cost · 100% Free
-                  </span>
-                  <span className="text-sm font-semibold text-foreground">
-                    Direct Email Delivery Using Your Google Account & Standard Python smtplib
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  No paid APIs or third-party subscriptions required. CypherLabelGuard connects directly to Google's official SMTP relay server (<code>smtp.gmail.com:587</code>) via encrypted TLS to dispatch genuine 6-digit verification codes to any user's inbox in real-time.
-                </p>
-              </div>
-
-              {/* Status & Diagnostic Banner */}
-              {smtpTestResult && (
-                <div
-                  className={`p-3.5 rounded-lg border text-xs ${
-                    smtpTestResult.success
-                      ? 'bg-success/10 border-success/30 text-success'
-                      : 'bg-destructive/10 border-destructive/30 text-destructive'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 font-semibold">
-                    <CheckCircle2 size={16} />
-                    <span>
-                      {smtpTestResult.success ? 'Live SMTP Connection Verified!' : 'SMTP Connection Diagnostic Notice'}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-foreground/80 leading-relaxed font-mono text-[11px]">
-                    {smtpTestResult.message}
-                  </p>
-                </div>
-              )}
-
-              {/* Configuration Form */}
-              <div className="space-y-4 p-5 rounded-lg bg-card/40 border border-border">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Gmail Address */}
-                  <div>
-                    <label className="text-xs font-semibold text-foreground block mb-1">
-                      Your Gmail Address
-                    </label>
-                    <input
-                      type="email"
-                      placeholder="yourname@gmail.com"
-                      value={smtpUser}
-                      onChange={(e) => setSmtpUser(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border focus:border-primary outline-none"
-                    />
-                    <span className="text-[10px] text-muted-foreground mt-1 block">
-                      The Gmail account used to dispatch verification codes
-                    </span>
-                  </div>
-
-                  {/* Google 16-Char App Password */}
-                  <div>
-                    <label className="text-xs font-semibold text-foreground block mb-1">
-                      Google 16-Character App Password
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="xxxx xxxx xxxx xxxx"
-                      value={smtpPassword}
-                      onChange={(e) => setSmtpPassword(e.target.value)}
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border focus:border-primary outline-none tracking-wider"
-                    />
-                    <span className="text-[10px] text-muted-foreground mt-1 block">
-                      Created in Google Security settings (never your regular Gmail password)
-                    </span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                  <div>
-                    <label className="text-xs font-medium text-foreground block mb-1">
-                      Sender Name
-                    </label>
-                    <input
-                      type="text"
-                      value={smtpFromName}
-                      onChange={(e) => setSmtpFromName(e.target.value)}
-                      className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1">
-                      SMTP Host (Locked)
-                    </label>
-                    <input
-                      type="text"
-                      disabled
-                      value="smtp.gmail.com"
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-muted/40 border border-border text-muted-foreground"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-muted-foreground block mb-1">
-                      SMTP Port & Protocol (Locked)
-                    </label>
-                    <input
-                      type="text"
-                      disabled
-                      value="587 (STARTTLS Encrypted)"
-                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-muted/40 border border-border text-muted-foreground"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex gap-3 pt-3 border-t border-border/60">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={testingSmtp || !smtpUser}
-                    onClick={handleTestSmtp}
-                    className="text-xs"
-                  >
-                    {testingSmtp ? 'Connecting to smtp.gmail.com...' : 'Test Gmail Connection'}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="default"
-                    size="sm"
-                    disabled={savingSmtp || !smtpUser || !smtpPassword}
-                    onClick={handleSaveSmtp}
-                    className="text-xs"
-                  >
-                    {savingSmtp ? 'Saving to .env...' : 'Save Configuration to .env'}
-                  </Button>
-                </div>
-              </div>
-
-              {/* 30-Second Google App Password Setup Guide */}
-              <div className="p-4 rounded-lg bg-muted/30 border border-border space-y-3">
-                <h4 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-1.5">
-                  <Lock size={13} className="text-primary" />
-                  How to generate your free 16-character Google App Password (30 Seconds):
-                </h4>
-                <ol className="text-xs text-muted-foreground space-y-2 list-decimal list-inside leading-relaxed">
-                  <li>
-                    Log in to your standard Google account and open{' '}
-                    <strong className="text-foreground">Security Settings</strong> (or visit{' '}
-                    <span className="font-mono text-primary">myaccount.google.com/security</span>).
-                  </li>
-                  <li>
-                    Verify that <strong className="text-foreground">2-Step Verification</strong> is enabled on your account.
-                  </li>
-                  <li>
-                    Click on <strong className="text-foreground">App passwords</strong> (or visit{' '}
-                    <span className="font-mono text-primary">myaccount.google.com/apppasswords</span>).
-                  </li>
-                  <li>
-                    Under <em>App name</em>, enter <strong className="text-foreground">CypherLabelGuard</strong> and click <strong>Create</strong>.
-                  </li>
-                  <li>
-                    Google will generate a 16-character code (e.g., <code>abcd efgh ijkl mnop</code>). Copy and paste it above!
-                  </li>
-                </ol>
               </div>
             </div>
           </Panel>
