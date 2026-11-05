@@ -7,6 +7,9 @@ except ImportError:
 from core.base_feature import BaseFeature
 from core.context import ExecutionContext
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 
 class VideoFrameSamplerFeature(BaseFeature):
     """
@@ -39,8 +42,8 @@ class VideoFrameSamplerFeature(BaseFeature):
                     duration_sec = round(frame_count / max(1.0, fps), 2)
                     is_real_video = True
                     cap.release()
-            except Exception:
-                pass
+            except Exception as _exc:
+                _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
         sampled_frames = 6 if not is_real_video else min(12, max(4, int(duration_sec // 5)))
         temporal_consistency = 0.98 if is_real_video else 0.90

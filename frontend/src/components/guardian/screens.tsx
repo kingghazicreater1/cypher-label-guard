@@ -1,3 +1,4 @@
+import { getStoredToken } from '@/lib/auth-token';
 import { useState, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
 import { ShieldCheck, Download, Search, Layers, Check, ArrowRight, Pause, Play, Activity, Target, Timer, Wallet, Building2, Plus, Settings2, Eye, AlertTriangle, FileCheck2, Trash2, KeyRound, CreditCard as CardIcon, FileText, CheckCircle2, Cpu, ChevronDown, ChevronUp, Sliders, Zap, Sparkles, Lock, Mail } from 'lucide-react';
@@ -1018,8 +1019,8 @@ export function AnalyticsScreen() {
         <Kpi label={`Cost (${period.toLowerCase()})`} value={costDisplay} change={`~${costPerLabel}/label`} down icon={<Wallet />} color="amber" />
       </div>
       <div className="chart-grid">
-        <ThroughputChart period={period} timeSeriesData={analytics?.time_series} />
-        <CostChart costBreakdown={analytics?.cost_breakdown} totalSpent={analytics?.total_cost} />
+        <ThroughputChart period={period} {...(analytics?.time_series ? { timeSeriesData: analytics.time_series } : {})} />
+        <CostChart {...(analytics?.cost_breakdown ? { costBreakdown: analytics.cost_breakdown } : {})} {...(analytics?.total_cost ? { totalSpent: analytics.total_cost } : {})} />
       </div>
       <Panel title="Accuracy by data type" icon={<Target />}>
         <div className="heatmap">
@@ -1977,7 +1978,7 @@ export function TenantsScreen() {
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   const handleInitiatePlanChange = (plan: string) => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
+    const token = getStoredToken();
     if (!token) {
       toast.error('Authentication Required: Please sign in or create an account first to manage packages and billing.');
       return;
@@ -2015,7 +2016,7 @@ export function TenantsScreen() {
   };
 
   const handleInitiateCreditPurchase = (amount: number) => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
+    const token = getStoredToken();
     if (!token) {
       toast.error('Authentication Required: Please sign in or create an account first to buy token credits.');
       return;

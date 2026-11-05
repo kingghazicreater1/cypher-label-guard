@@ -33,6 +33,9 @@ from api.batch_routes import router as batch_router
 from api.batch_images_routes import router as batch_images_router
 from api.keys_routes import router as keys_router
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("CYPHER_LABEL_GUARD.API")
 
@@ -164,7 +167,7 @@ class ConnectionManager:
         try:
             await asyncio.wait_for(connection.send_json(message), timeout=self.SEND_TIMEOUT_SECONDS)
             return True
-        except Exception:
+        except Exception as _exc:
             return False
 
     async def broadcast(self, message: Dict[str, Any], owner_id: Optional[str] = None):
@@ -385,8 +388,8 @@ async def run_inference(
                 return True
             if peek.startswith(b"GIF8"):  # GIF
                 return True
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
         return False
 
     def check_is_video_container(img_raw: str, text_raw: str) -> bool:
@@ -410,8 +413,8 @@ async def run_inference(
             # EBML Header (Matroska / WebM video)
             if peek.startswith(b"\x1a\x45\xdf\xa3"):
                 return True
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
         return False
 
     # 1. Video payload rejected in IMAGE/VISION pipeline
@@ -971,6 +974,7 @@ async def run_inference(
 
         job_title = req.text[:80] if req.text else f"Analysis Job #{job_num}"
 
+        db_sess = None
         try:
             db_sess = SessionLocal()
             billed_user = None
@@ -988,8 +992,8 @@ async def run_inference(
                         status_code=402,
                         detail=f"Payment Required: Insufficient balance ({billed_user.credits_balance} credits). Job requires {cost_credits} credits."
                     )
-                db_sess.commit()
-                db_sess.refresh(billed_user)
+                # No commit here: the deduction and the job record are saved in ONE transaction below,
+                # so a failed insert can never leave the user charged for a job that was not recorded.
 
             consensus_data = unified_out.get("consensus", {})
             is_zero_criteria = (not crit_results or len(crit_results) == 0)
@@ -1024,6 +1028,9 @@ async def run_inference(
                 criteria_json=json.dumps(crit_results) if crit_results else None,
                 annotations_json=json.dumps(annotations) if annotations else None,
             )
+            if owner_user is None:
+                # Guest/test run: audit rows and jobs require an owner (NOT NULL user_id), so nothing is stored.
+                raise _SkipPersistence()
             db_sess.add(new_job)
 
             if has_signature_anomaly:
@@ -1040,9 +1047,20 @@ async def run_inference(
                 )
             db_sess.add(log)
             db_sess.commit()
-            db_sess.close()
+        except _SkipPersistence:
+            logger.debug("Guest run: job record not persisted.")
+        except HTTPException:
+            # e.g. 402 Payment Required must reach the client, never be swallowed as a "db error".
+            if db_sess is not None:
+                db_sess.rollback()
+            raise
         except Exception as db_err:
-            logger.warning(f"Could not persist job record to db: {db_err}")
+            if db_sess is not None:
+                db_sess.rollback()
+            logger.warning(f"Could not persist job record to db: {type(db_err).__name__}: {db_err}")
+        finally:
+            if db_sess is not None:
+                db_sess.close()
 
         # Update in-memory state and broadcast live parliament state to all WebSocket connected subscribers
         if grid:
@@ -1435,6 +1453,10 @@ async def get_connection_pools():
 # ------------------------------------------------------------------------------
 # WebSocket Endpoint for Live Parliament Dashboard (Feature 31)
 # ------------------------------------------------------------------------------
+class _SkipPersistence(Exception):
+    """Internal control-flow marker: this run has no owner, so there is nothing to persist."""
+
+
 WS_AUTH_TIMEOUT_SECONDS = 5.0
 WS_MAX_MESSAGE_BYTES = 4096
 WS_MAX_MESSAGES_PER_MINUTE = 60
@@ -1463,11 +1485,11 @@ async def websocket_parliament_endpoint(websocket: WebSocket):
             db_sess.close()
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
-    except Exception:
+    except Exception as _exc:
         try:
             await websocket.close(code=4401)
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
         return
 
     await ws_manager.connect(websocket, owner_id)

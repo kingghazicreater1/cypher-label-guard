@@ -47,7 +47,7 @@ class BaseFeature(ABC):
         Returns:
             ExecutionContext: The new evolved context snapshot.
         """
-        pass
+        raise NotImplementedError(f"{type(self).__name__} must implement execute()")
 
     def get_manifest(self) -> Dict[str, Any]:
         """Return the feature manifest dictionary."""

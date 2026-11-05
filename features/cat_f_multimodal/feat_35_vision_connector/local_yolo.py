@@ -4,6 +4,9 @@ from typing import Dict, Any, List, Optional
 import cv2
 import numpy as np
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 COCO_CLASSES = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
     "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
@@ -35,8 +38,8 @@ def get_yolo_net():
                 net = cv2.dnn.readNetFromONNX(path)
                 _NET_CACHE = net
                 return _NET_CACHE
-            except Exception:
-                pass
+            except Exception as _exc:
+                _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
     return None
 
 def detect_with_local_yolo(raw_bytes: bytes, conf_threshold: float = 0.25, nms_threshold: float = 0.45) -> Optional[Dict[str, Any]]:

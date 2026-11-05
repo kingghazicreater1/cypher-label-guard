@@ -21,7 +21,7 @@ export function getClerkPublishableKey(): string {
     }
   }
   if (typeof import.meta !== 'undefined' && import.meta.env) {
-    const envKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+    const envKey = (import.meta.env as Record<string, string | undefined>)['VITE_CLERK_PUBLISHABLE_KEY'];
     if (envKey && (envKey.startsWith('pk_test_') || envKey.startsWith('pk_live_'))) {
       return envKey;
     }
@@ -164,7 +164,7 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
           <SignIn
             routing="hash"
             appearance={{
-              baseTheme: dark,
+              baseTheme: dark as any,
               variables: {
                 colorPrimary: 'oklch(0.515 0.222 262)',
                 colorBackground: 'transparent',
@@ -178,7 +178,7 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
           <SignUp
             routing="hash"
             appearance={{
-              baseTheme: dark,
+              baseTheme: dark as any,
               variables: {
                 colorPrimary: 'oklch(0.515 0.222 262)',
                 colorBackground: 'transparent',
@@ -221,7 +221,7 @@ function ClerkUserAvatarInner() {
     <div className="flex items-center gap-2">
       <UserButton
         appearance={{
-          baseTheme: dark,
+          baseTheme: dark as any,
         }}
       />
     </div>
