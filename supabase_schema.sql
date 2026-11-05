@@ -1,24 +1,59 @@
 -- ==============================================================================
--- CypherLabelGuard CORE EDITION v2.0
--- Supabase / PostgreSQL Schema Migration Script
--- Run this in your Supabase SQL Editor (dashboard.supabase.com -> Project -> SQL Editor)
+-- CypherLabelGuard v2.0 - Supabase Schema Setup Script
+-- Copy all of this code, paste it into Supabase SQL Editor, and click "Run".
 -- ==============================================================================
 
--- 1. Enable UUID Extension
+-- 1. UUID Extension enable karein
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. Users Table
+-- 2. Users Table: Agar pehle se bani hui hai to missing columns add karein, 
+-- warna nayi table create karein (Existing data safe rahega)
 CREATE TABLE IF NOT EXISTS public.users (
     id VARCHAR(36) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
     email VARCHAR(255) UNIQUE NOT NULL,
-    hashed_password VARCHAR(255) NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL DEFAULT '!clerk-managed',
     full_name VARCHAR(100) NOT NULL DEFAULT 'King Ghazi',
-    role VARCHAR(50) NOT NULL DEFAULT 'Administrator',
+    role VARCHAR(50) NOT NULL DEFAULT 'User',
     workspace_name VARCHAR(100) NOT NULL DEFAULT 'Ghazi Workspace',
-    credits_balance INTEGER DEFAULT 5000,
+    credits_balance INTEGER DEFAULT 500,
     stripe_customer_id VARCHAR(100),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Agar table pehle se kisi aur app ki bani hui thi, to CypherLabelGuard ke columns safely add karein:
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='id') THEN
+        ALTER TABLE public.users ADD COLUMN id VARCHAR(36) DEFAULT uuid_generate_v4()::text;
+        UPDATE public.users SET id = uuid_generate_v4()::text WHERE id IS NULL;
+        ALTER TABLE public.users ALTER COLUMN id SET NOT NULL;
+        ALTER TABLE public.users ADD CONSTRAINT users_id_unique UNIQUE (id);
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='hashed_password') THEN
+        ALTER TABLE public.users ADD COLUMN hashed_password VARCHAR(255) DEFAULT '!clerk-managed';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='full_name') THEN
+        ALTER TABLE public.users ADD COLUMN full_name VARCHAR(100) DEFAULT 'King Ghazi';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='role') THEN
+        ALTER TABLE public.users ADD COLUMN role VARCHAR(50) DEFAULT 'User';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='workspace_name') THEN
+        ALTER TABLE public.users ADD COLUMN workspace_name VARCHAR(100) DEFAULT 'Ghazi Workspace';
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='credits_balance') THEN
+        ALTER TABLE public.users ADD COLUMN credits_balance INTEGER DEFAULT 500;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='stripe_customer_id') THEN
+        ALTER TABLE public.users ADD COLUMN stripe_customer_id VARCHAR(100);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email);
 
@@ -115,12 +150,11 @@ CREATE TABLE IF NOT EXISTS public.audit_log_entries (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON public.audit_log_entries(user_id);
 
--- 9. Insert Default Folders
+-- 9. Default Workspace Folder insert karein
 INSERT INTO public.folder_records (name)
 VALUES ('General Workspace')
 ON CONFLICT (name) DO NOTHING;
 
 -- ==============================================================================
--- Schema creation complete! All 7 relational tables and indexes are ready.
+-- SUCCESS: Schema ready! All tables and indexes are configured.
 -- ==============================================================================
-
