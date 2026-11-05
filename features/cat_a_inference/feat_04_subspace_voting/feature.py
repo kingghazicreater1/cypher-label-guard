@@ -131,15 +131,20 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         decoder = json.JSONDecoder()
         candidates = []
         pos = 0
-        while True:
+        max_attempts = 200  # bound the work on pathological, brace-heavy model output
+        attempts = 0
+        while attempts < max_attempts:
             pos = cleaned.find("{", pos)
             if pos == -1:
                 break
+            attempts += 1
             try:
-                obj, _ = decoder.raw_decode(cleaned[pos:])
+                obj, end = decoder.raw_decode(cleaned, pos)
                 if isinstance(obj, dict):
                     candidates.append(obj)
-            except Exception:
+                pos = max(end, pos + 1)  # skip past a successfully parsed object instead of rescanning inside it
+                continue
+            except ValueError:
                 pass
             pos += 1
 

@@ -4,6 +4,9 @@ from typing import Any, Dict, List
 from core.base_feature import BaseFeature
 from core.context import ExecutionContext, VoteRecord
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 
 class EchoCancellationFeature(BaseFeature):
     """
@@ -50,8 +53,8 @@ class EchoCancellationFeature(BaseFeature):
             is_tok_anom, tok_guard, tok_matched = BlindIngressMasker.audit_token_echo(trace_id, val)
             if is_tok_anom:
                 return True, tok_guard, tok_matched
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
         # 1. Container magic bytes signature check (word boundary or prefix to avoid false positives)
         for sig in self.CONTAINER_SIGNATURES:

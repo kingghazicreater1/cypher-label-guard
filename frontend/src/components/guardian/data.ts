@@ -25,6 +25,12 @@ export type Job = {
   consensus_label?: string | undefined;
   affirmative_votes?: number | string | undefined;
   anomaly_detected?: boolean | undefined;
+  duration?: string | number | undefined;
+  job_number?: string | number | undefined;
+  has_anomaly?: boolean | undefined;
+  lineage_hash?: string | undefined;
+  folders?: string[] | undefined;
+  confidence?: number | string | undefined;
 };
 
 export const initialJobs: Job[] = [];
@@ -215,12 +221,13 @@ export function resolveHeadingBoundingBoxes(
     const textToMatch = `${c.name || ''} ${c.value || ''}`.toLowerCase();
     const matchedProfile = profiles.find((p) => p.match.test(textToMatch));
 
-    let chosenBox = matchedProfile ? { ...matchedProfile.box } : { ...fallbackPalette[i % fallbackPalette.length].box };
+    const fb = fallbackPalette[i % fallbackPalette.length]!;
+    let chosenBox = matchedProfile ? { ...matchedProfile.box } : { ...fb.box };
     const chosenColor = (c.anomaly || anomaly)
       ? '#ef4444'
       : matchedProfile
       ? matchedProfile.color
-      : fallbackPalette[i % fallbackPalette.length].color;
+      : fb.color;
 
     // Smart multi-focus distribution for duplicate parts (e.g. wheels)
     if (matchedProfile && /tyre|tire|wheel/i.test(matchedProfile.match.source)) {

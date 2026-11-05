@@ -221,7 +221,7 @@ export function DashboardScreen() {
         if (lines.length > 1) {
           const randomIndex = Math.floor(Math.random() * (lines.length - 1)) + 1;
           const chosenRow = lines[randomIndex];
-          setInputText(chosenRow);
+          if (chosenRow) setInputText(chosenRow);
           setSelectedPreset(sampleType);
           if (sampleType === 'ecommerce') {
             setCriteria([
@@ -329,10 +329,10 @@ export function DashboardScreen() {
       {/* Real Throughput & Provider Cost Charts Grid — Connected to SQLite Dataset */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-8">
         <div className="lg:col-span-7">
-          <ThroughputChart period={period} timeSeriesData={analytics?.time_series} />
+          <ThroughputChart period={period} {...(analytics?.time_series ? { timeSeriesData: analytics.time_series } : {})} />
         </div>
         <div className="lg:col-span-5">
-          <CostChart costBreakdown={analytics?.cost_breakdown} totalSpent={analytics?.total_cost} />
+          <CostChart {...(analytics?.cost_breakdown ? { costBreakdown: analytics.cost_breakdown } : {})} {...(analytics?.total_cost ? { totalSpent: analytics.total_cost } : {})} />
         </div>
       </div>
 

@@ -13,6 +13,9 @@ from db.models import User
 from api.auth_routes import get_current_user, get_optional_current_user, require_admin
 from typing import Optional
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v2/keys", tags=["BYOK API Keys"])
 
 ENV_FILE_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -216,8 +219,8 @@ async def update_api_keys(
     if updates:
         try:
             _save_to_dotenv(updates)
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
     return {
         "success": True,
@@ -564,8 +567,8 @@ async def get_key_slots(user: Optional[User] = Depends(get_optional_current_user
     if dotenv_sync:
         try:
             _save_to_dotenv(dotenv_sync)
-        except Exception:
-            pass
+        except Exception as _exc:
+            _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
     return {
         "success": True,

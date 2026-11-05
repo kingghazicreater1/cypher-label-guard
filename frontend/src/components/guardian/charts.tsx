@@ -83,7 +83,7 @@ export function ThroughputChart({
               <CartesianGrid stroke="var(--border)" vertical={false} strokeDasharray="3 5" />
               <XAxis
                 dataKey="time"
-                ticks={xAxisTicks}
+                {...(xAxisTicks ? { ticks: xAxisTicks } : {})}
                 tick={{ fill: 'var(--muted-foreground)', fontSize: 9 }}
                 axisLine={false}
                 tickLine={false}

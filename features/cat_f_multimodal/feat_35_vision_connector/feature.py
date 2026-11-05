@@ -9,6 +9,9 @@ from core.base_feature import BaseFeature
 from core.context import ExecutionContext
 from core.fallback_registry import FallbackRegistry
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
 
 def analyze_raster_buffer(raw_bytes: bytes) -> Dict[str, Any]:
     """
@@ -222,8 +225,8 @@ def detect_visual_entities(raw_bytes: bytes, context_hints: str = "") -> List[st
             if "Athletic Running Shoe" not in detected:
                 detected.append("Athletic Running Shoe")
 
-    except Exception:
-        pass
+    except Exception as _exc:
+        _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
     return detected
 
@@ -260,21 +263,21 @@ class VisionConnectorFeature(BaseFeature):
                 try:
                     raw_image_bytes = base64.b64decode(b64_content)
                     visual_attributes.append(f"Format: {fmt.upper()}, Stream size: {len(raw_image_bytes) // 1024} KB")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
             elif str_data.startswith("/9j/") or str_data.startswith("iVBORw0KGgo") or len(str_data) > 100:
                 try:
                     raw_image_bytes = base64.b64decode(str_data)
                     visual_attributes.append(f"Decoded raw raster buffer: {len(raw_image_bytes) // 1024} KB")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
             elif os.path.exists(str_data) and os.path.isfile(str_data):
                 try:
                     with open(str_data, "rb") as f:
                         raw_image_bytes = f.read()
                     visual_attributes.append(f"Loaded local specimen file: {os.path.basename(str_data)}")
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
         # 2. Extract verified visual characteristics & detected objects from image raster
         detected_objects = []
@@ -300,8 +303,8 @@ class VisionConnectorFeature(BaseFeature):
                     is_edible_val = yolo_res["is_edible"]
                     yolo_boxes = yolo_res.get("boxes", [])
                     visual_attributes.append(f"Local YOLO ({yolo_res.get('latency_ms', 0)}ms): {', '.join(detected_objects)} (Count: {item_count_val})")
-            except Exception:
-                pass
+            except Exception as _exc:
+                _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
             # 2b. Secondary morphological fallback if YOLO found zero objects
             if not detected_objects:

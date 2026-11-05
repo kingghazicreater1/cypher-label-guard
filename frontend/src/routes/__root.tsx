@@ -138,7 +138,7 @@ function RootComponent() {
         <ClerkProvider
           publishableKey={CLERK_PUBLISHABLE_KEY}
           appearance={{
-            baseTheme: dark,
+            baseTheme: dark as any,
             variables: {
               colorPrimary: "#10b981",
               colorBackground: "#090f0b",

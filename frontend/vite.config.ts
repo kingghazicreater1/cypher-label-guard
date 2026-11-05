@@ -8,7 +8,9 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 import path from "path";
 
 export default defineConfig({
-  envDir: path.resolve(__dirname, ".."),
+  vite: {
+    envDir: path.resolve(__dirname, ".."),
+  },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this

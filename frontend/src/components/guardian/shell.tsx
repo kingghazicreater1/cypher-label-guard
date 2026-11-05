@@ -31,7 +31,7 @@ import {
 } from '@/lib/api';
 import { exportFile, labels } from './data';
 import { AuthGatekeeper } from './auth-gatekeeper';
-import { refreshAuthToken, signOutEverywhere } from '@/lib/auth-token';
+import { refreshAuthToken, signOutEverywhere, getStoredToken, clearStoredSession } from '@/lib/auth-token';
 
 // The 5 core tabs as requested by the user from the Design 3 screenshot
 const bottomNav = [
@@ -63,7 +63,7 @@ export function GuardianShell({ children }: { children: ReactNode }) {
 
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
+      const token = getStoredToken();
       const saved = typeof window !== 'undefined' ? localStorage.getItem('cypher_user_profile') : null;
       if (token && saved) {
         return JSON.parse(saved);
@@ -75,11 +75,11 @@ export function GuardianShell({ children }: { children: ReactNode }) {
   // Verify and hydrate the active session on initial load against /api/v2/auth/me.
   // The Clerk session token is short-lived, so get a fresh one before asking the backend.
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? localStorage.getItem('cypher_auth_token') : null;
-    if (!stored) return;
     let cancelled = false;
     (async () => {
-      await refreshAuthToken();
+      // Waits for Clerk (up to a few seconds) and returns null when nobody is signed in.
+      const fresh = await refreshAuthToken();
+      if (!fresh || cancelled) return;
       try {
         const res = await getCurrentUserProfile();
         if (cancelled || !res?.user) return;
@@ -94,8 +94,7 @@ export function GuardianShell({ children }: { children: ReactNode }) {
       } catch {
         if (cancelled) return;
         // Token missing/expired/invalid: drop local state and show the sign-in screen.
-        localStorage.removeItem('cypher_auth_token');
-        localStorage.removeItem('cypher_user_profile');
+        clearStoredSession();
         setCurrentUser(null);
       }
     })();
