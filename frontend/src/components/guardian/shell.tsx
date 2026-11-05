@@ -35,8 +35,6 @@ import {
   loginWithEmail,
   signupWithEmail,
   getCurrentUserProfile,
-  sendEmailOtp,
-  verifyEmailOtp,
 } from '@/lib/api';
 import { exportFile, labels } from './data';
 import { AuthGatekeeper } from './auth-gatekeeper';
@@ -123,73 +121,12 @@ export function GuardianShell({ children }: { children: ReactNode }) {
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
   // Email form state (Email OTP vs Password Login vs Signup)
-  const [emailMode, setEmailMode] = useState<'otp' | 'login' | 'signup'>('otp');
+  const [emailMode, setEmailMode] = useState<'login' | 'signup'>('login');
   const [emailInput, setEmailInput] = useState('kingghazi123580@gmail.com');
   const [passwordInput, setPasswordInput] = useState('');
   const [fullNameInput, setFullNameInput] = useState('King Ghazi');
   const [googleEmailInput, setGoogleEmailInput] = useState('commander@cypherlabelguard.ai');
   const [isSubmittingEmail, setIsSubmittingEmail] = useState(false);
-
-  // Email OTP state (Free Gmail SMTP)
-  const [emailOtpInput, setEmailOtpInput] = useState('');
-  const [emailOtpSent, setEmailOtpSent] = useState(false);
-  const [demoEmailOtpCode, setDemoEmailOtpCode] = useState<string | null>(null);
-  const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
-  const [isVerifyingEmailOtp, setIsVerifyingEmailOtp] = useState(false);
-
-  const handleSendEmailOtp = async () => {
-    const trimmedEmail = emailInput.trim();
-    if (!trimmedEmail || !trimmedEmail.includes('@')) {
-      toast.error('Please enter a valid email address');
-      return;
-    }
-    setIsSendingEmailOtp(true);
-    try {
-      const res = await sendEmailOtp(trimmedEmail, fullNameInput.trim() || undefined);
-      setEmailOtpSent(true);
-      if (res.demo_otp) {
-        setDemoEmailOtpCode(res.demo_otp);
-        setEmailOtpInput('');
-        toast.info(`Verification code: ${res.demo_otp}`);
-      } else {
-        toast.success(`6-digit code dispatched to ${trimmedEmail} via Gmail SMTP! Check your inbox.`);
-      }
-    } catch (err: any) {
-      toast.error(`Failed to dispatch email: ${err.message}`);
-    } finally {
-      setIsSendingEmailOtp(false);
-    }
-  };
-
-  const handleVerifyEmailOtp = async () => {
-    const trimmedEmail = emailInput.trim();
-    const cleanOtp = emailOtpInput.trim();
-    if (!cleanOtp || cleanOtp.length < 6) {
-      toast.error('Please enter the full 6-digit verification code');
-      return;
-    }
-    setIsVerifyingEmailOtp(true);
-    try {
-      const res = await verifyEmailOtp(trimmedEmail, cleanOtp);
-      const profile: UserProfile = {
-        name: res.user?.full_name || fullNameInput.trim() || trimmedEmail.split('@')[0],
-        email: res.user?.email || trimmedEmail,
-        phone: currentUser?.phone || undefined,
-        authMethod: 'email',
-        isLoggedIn: true,
-      };
-      setCurrentUser(profile);
-      localStorage.setItem('cypher_user_profile', JSON.stringify(profile));
-      if (res.token) localStorage.setItem('cypher_auth_token', res.token);
-      toast.success(`Security code verified! Welcome ${profile.name}`);
-      setAuthTab('profile');
-      await refreshBilling();
-    } catch (err: any) {
-      toast.error(`Verification rejected: ${err.message}`);
-    } finally {
-      setIsVerifyingEmailOtp(false);
-    }
-  };
 
   const handleGoogleSignIn = async () => {
     try {
@@ -638,7 +575,7 @@ export function GuardianShell({ children }: { children: ReactNode }) {
                         Authentication Method
                       </span>
                       <p className="font-medium text-foreground flex items-center gap-1.5">
-                        ✉️ Enterprise Email Verification (Gmail SMTP Relay)
+                        Official Enterprise Account
                       </p>
                     </div>
 
@@ -646,7 +583,7 @@ export function GuardianShell({ children }: { children: ReactNode }) {
                       <Button asChild variant="outline" className="justify-start text-xs h-9">
                         <Link to="/settings" onClick={() => setModal(null)}>
                           <Sliders size={14} className="mr-2 text-primary" />
-                          Configure Key Slots & Free Gmail SMTP
+                          Configure Enterprise Key Slots
                         </Link>
                       </Button>
                       <Button asChild variant="outline" className="justify-start text-xs h-9">
@@ -679,204 +616,93 @@ export function GuardianShell({ children }: { children: ReactNode }) {
                     <div className="flex justify-center gap-2 pt-2">
                       <Button size="sm" onClick={() => setAuthTab('email')}>
                         <Mail size={13} className="mr-1.5" />
-                        Sign In via Email OTP
+                        Sign In with Email & Password
                       </Button>
                     </div>
                   </div>
                 )
               )}
 
-              {/* View 4: Real Email Authentication (Free Gmail SMTP OTP + Password) */}
+              {/* View 4: Real Email Authentication (Password Login & Sign Up) */}
               {authTab === 'email' && (
                 <div className="py-2 space-y-3">
                   <div className="flex rounded bg-muted/60 p-1 mb-1 gap-1">
                     <button
                       type="button"
-                      onClick={() => setEmailMode('otp')}
+                      onClick={() => setEmailMode('login')}
                       className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
-                        emailMode === 'otp'
+                        emailMode === 'login'
                           ? 'bg-background text-foreground shadow-sm font-bold text-primary'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      Security Code (OTP)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEmailMode('login')}
-                      className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
-                        emailMode === 'login'
-                          ? 'bg-background text-foreground shadow-sm font-bold'
-                          : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      Password
+                      Sign In (Password)
                     </button>
                     <button
                       type="button"
                       onClick={() => setEmailMode('signup')}
                       className={`flex-1 text-xs py-1 rounded font-medium transition-all ${
                         emailMode === 'signup'
-                          ? 'bg-background text-foreground shadow-sm font-bold'
+                          ? 'bg-background text-foreground shadow-sm font-bold text-primary'
                           : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      Sign Up
+                      Sign Up (Create Account)
                     </button>
                   </div>
 
-                  {/* Mode A: Free Gmail SMTP 6-Digit Code (Email OTP) */}
-                  {emailMode === 'otp' && (
-                    <div className="space-y-3">
-                      {/* Step-by-Step Instructions Card */}
-                      <div className="p-3 rounded-lg bg-primary/10 border border-primary/20 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-primary/20 text-primary flex items-center justify-center text-xs font-bold font-mono">
-                            ✉️
-                          </span>
-                          <span className="text-xs font-semibold text-foreground">
-                            1-Click Email Security Code Verification
-                          </span>
-                        </div>
-                        <ul className="text-[11px] text-muted-foreground space-y-1 list-disc list-inside leading-relaxed pl-1">
-                          <li>
-                            Enter your email (e.g. <span className="font-mono text-foreground font-semibold">kingghazi123580@gmail.com</span>).
-                          </li>
-                          <li>
-                            Click <strong className="text-foreground">Send Code</strong> to receive a genuine 6-digit one-time passcode.
-                          </li>
-                          <li>
-                            Check your email inbox (or Spam/Junk folder if first time) and enter the code below.
-                          </li>
-                        </ul>
-                      </div>
-
-                      <div>
-                        <label className="text-xs font-medium text-foreground block mb-1">
-                          Email Address
-                        </label>
-                        <div className="flex gap-2">
-                          <input
-                            type="email"
-                            placeholder="user@example.com"
-                            value={emailInput}
-                            onChange={(e) => setEmailInput(e.target.value)}
-                            className="flex-1 text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={isSendingEmailOtp}
-                            onClick={handleSendEmailOtp}
-                            className="text-xs h-9 px-3"
-                          >
-                            {isSendingEmailOtp ? 'Sending...' : emailOtpSent ? 'Resend Code' : 'Send Code'}
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* Demo OTP Banner if SMTP not configured or in dev */}
-                      {demoEmailOtpCode && (
-                        <div className="p-2.5 rounded bg-primary/10 border border-primary/30 text-xs">
-                          <div className="flex justify-between items-center font-mono">
-                            <span className="text-primary font-bold">📬 Verification Code:</span>
-                            <span className="font-bold text-foreground bg-primary/20 px-2.5 py-0.5 rounded tracking-widest text-sm">
-                              {demoEmailOtpCode}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-muted-foreground mt-1">
-                            Type this 6-digit code below to establish your verified session.
-                          </p>
-                        </div>
-                      )}
-
-                      {emailOtpSent && (
-                        <div className="space-y-3 pt-1">
-                          <div>
-                            <label className="text-xs font-medium text-foreground block mb-1">
-                              6-Digit Email Verification Code
-                            </label>
-                            <input
-                              type="text"
-                              maxLength={6}
-                              placeholder="Type 6 digits..."
-                              value={emailOtpInput}
-                              onChange={(e) => setEmailOtpInput(e.target.value)}
-                              className="w-full text-center text-lg font-mono tracking-widest px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                            />
-                          </div>
-
-                          <Button
-                            type="button"
-                            className="w-full h-9 text-xs font-semibold"
-                            disabled={isVerifyingEmailOtp || !emailOtpInput || emailOtpInput.length < 6}
-                            onClick={handleVerifyEmailOtp}
-                          >
-                            {isVerifyingEmailOtp ? 'Verifying Code...' : 'Verify Code & Sign In'}
-                          </Button>
-                        </div>
-                      )}
+                  {emailMode === 'signup' && (
+                    <div>
+                      <label className="text-xs font-medium text-foreground block mb-1">
+                        Full Name
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Your Name (e.g. King Ghazi)"
+                        value={fullNameInput}
+                        onChange={(e) => setFullNameInput(e.target.value)}
+                        className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
+                      />
                     </div>
                   )}
 
-                  {/* Mode B & C: Password Login & Signup */}
-                  {emailMode !== 'otp' && (
-                    <>
-                      {emailMode === 'signup' && (
-                        <div>
-                          <label className="text-xs font-medium text-foreground block mb-1">
-                            Full Name
-                          </label>
-                          <input
-                            type="text"
-                            placeholder="Your Name (e.g. King Ghazi)"
-                            value={fullNameInput}
-                            onChange={(e) => setFullNameInput(e.target.value)}
-                            className="w-full text-xs px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                          />
-                        </div>
-                      )}
+                  <div>
+                    <label className="text-xs font-medium text-foreground block mb-1">
+                      Email Address
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="user@example.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-foreground block mb-1">
+                      Password {emailMode === 'signup' ? '(min 6 characters)' : ''}
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="Enter password..."
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
+                    />
+                  </div>
 
-                      <div>
-                        <label className="text-xs font-medium text-foreground block mb-1">
-                          Email Address
-                        </label>
-                        <input
-                          type="email"
-                          placeholder="user@example.com"
-                          value={emailInput}
-                          onChange={(e) => setEmailInput(e.target.value)}
-                          className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-medium text-foreground block mb-1">
-                          Password {emailMode === 'signup' ? '(min 6 characters)' : ''}
-                        </label>
-                        <input
-                          type="password"
-                          placeholder="Enter password..."
-                          value={passwordInput}
-                          onChange={(e) => setPasswordInput(e.target.value)}
-                          className="w-full text-xs font-mono px-3 py-2 rounded-md bg-background border border-border outline-none focus:border-primary"
-                        />
-                      </div>
-
-                      <Button
-                        type="button"
-                        className="w-full h-9 text-xs font-semibold mt-2"
-                        disabled={isSubmittingEmail}
-                        onClick={handleEmailAuth}
-                      >
-                        {isSubmittingEmail
-                          ? 'Authenticating with Database...'
-                          : emailMode === 'signup'
-                          ? 'Register & Create Account'
-                          : 'Sign In (Verify Password)'}
-                      </Button>
-                    </>
-                  )}
+                  <Button
+                    type="button"
+                    className="w-full h-9 text-xs font-semibold mt-2"
+                    disabled={isSubmittingEmail}
+                    onClick={handleEmailAuth}
+                  >
+                    {isSubmittingEmail
+                      ? 'Authenticating...'
+                      : emailMode === 'signup'
+                      ? 'Register & Create Account'
+                      : 'Sign In'}
+                  </Button>
                 </div>
               )}
             </div>
