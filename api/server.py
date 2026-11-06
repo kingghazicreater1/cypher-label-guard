@@ -679,7 +679,7 @@ async def run_inference(
                         "votes": {
                             "OpenAI (gpt-4o-mini)": val,
                             "Anthropic (claude-3-5-sonnet)": val,
-                            "Google (gemini-1.5-flash)": val,
+                            "Google (gemini-flash-lite-latest)": val,
                             "Mistral (mistral-large)": val,
                         }
                     })

@@ -695,7 +695,7 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
 
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
         mistral_key = os.getenv("MISTRAL_API_KEY")
         mistral_model = os.getenv("MISTRAL_MODEL", "mistral-large-2407")
@@ -768,12 +768,33 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                             ballot_data = self._clean_and_parse_json(resp.json()["choices"][0]["message"]["content"])
                             provider_label = f"Mistral ({mistral_model})"
 
+                elif api == "mistral_large" and openrouter_key:
+                    seat_model = openrouter_model or "nvidia/nemotron-3.5-lightning:free"
+                    headers = {
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "HTTP-Referer": "https://cypherlabelguard.ai",
+                        "X-Title": "CypherLabelGuard",
+                        "Content-Type": "application/json",
+                    }
+                    payload = {
+                        "model": seat_model,
+                        "temperature": 0.0,
+                        "max_tokens": 1000,
+                        "messages": [{"role": "user", "content": prompt}],
+                    }
+                    async with acquire_provider_slot("openrouter", timeout=5.0):
+                        resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=20.0)
+                        if resp.status_code == 200:
+                            raw = resp.json()["choices"][0]["message"]["content"]
+                            ballot_data = self._clean_and_parse_json(raw)
+                            provider_label = f"OpenRouter ({seat_model})"
+
                 elif groq_key:
                     groq_architectures = {
                         "openai_gpt4": groq_model or "openai/gpt-oss-120b",
-                        "anthropic_claude": "openai/gpt-oss-20b",
+                        "anthropic_claude": "qwen/qwen3.8-27b",
                         "google_gemini": "qwen/qwen3.8-27b",
-                        "mistral_large": "openai/gpt-oss-20b",
+                        "mistral_large": "openai/gpt-oss-120b",
                     }
                     seat_model = groq_architectures.get(api, groq_model or "openai/gpt-oss-120b")
                     headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
@@ -966,7 +987,8 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         if category_votes:
             most_common_cat, highest_freq = Counter(category_votes).most_common(1)[0]
             concordance_score = (highest_freq / len(category_votes))
-            effective_affirmative_votes = int(round(concordance_score * 32))
+            # Affirmative votes are normalized against the full 4-seat parliamentary chamber
+            effective_affirmative_votes = int(round((highest_freq / 4.0) * 32))
         else:
             most_common_cat = "UNCONFIGURED"
             concordance_score = 0.0
@@ -974,7 +996,13 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
 
         # Check Decision Thresholds (Rule 20 32-Seat Chamber: >=28 Confirmed, 17-27 Stalemate, <=16 Human Review)
         new_flags = dict(evolved_context.flags)
-        if effective_affirmative_votes >= 28:
+        # Parliamentary Quorum Rule: Consensus requires quorum of at least 3 distinct voting models!
+        if len(category_votes) < 3:
+            new_flags["confirmed"] = False
+            new_flags["stalemate"] = False
+            new_flags["human_review_required"] = True
+            verdict_status = "HUMAN_REVIEW_REQUIRED" if category_votes else "AWAITING_CONFIGURED_KEYS"
+        elif effective_affirmative_votes >= 28:
             new_flags["confirmed"] = True
             new_flags["stalemate"] = False
             new_flags["human_review_required"] = False
@@ -1003,7 +1031,7 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
             "openrouter": os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"),
             "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             "claude": os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"),
-            "gemini": os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            "gemini": os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest"),
             "mistral": os.getenv("MISTRAL_MODEL", "mistral-large-2407"),
         }
 
@@ -1068,7 +1096,7 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         openrouter_model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
 
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
 
         openai_key = os.getenv("OPENAI_API_KEY")
         openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -1084,17 +1112,9 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
 
         active_providers = []
         if groq_key:
-            # If Groq is configured and other native keys are absent, Groq models power the parliament
-            if not openai_key and not anthropic_key and not gemini_key and not mistral_key:
-                active_providers.append(("groq_oss120b", groq_key, groq_model or "openai/gpt-oss-120b"))
-                active_providers.append(("groq_qwen27b", groq_key, "qwen/qwen3.8-27b"))
-                if not openrouter_key:
-                    active_providers.append(("groq_oss20b", groq_key, "openai/gpt-oss-20b"))
-            else:
-                active_providers.append(("groq", groq_key, groq_model))
-        if openrouter_key and (not groq_key or len(active_providers) < 3):
+            active_providers.append(("groq", groq_key, groq_model or "openai/gpt-oss-120b"))
+        if openrouter_key:
             active_providers.append(("openrouter", openrouter_key, openrouter_model))
-
         if gemini_key:
             active_providers.append(("gemini", gemini_key, gemini_model))
         if openai_key:
@@ -1282,7 +1302,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             "contents": [{"parts": [{"text": prompt}]}],
                             "generationConfig": {"temperature": 0.0}
                         }
-                        r = await client.post(url, headers=headers, json=payload, timeout=15.0)
+                        r = await client.post(url, headers=headers, json=payload, timeout=25.0)
                         if r.status_code == 200:
                             content = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                             return p_name, p_model, content
@@ -1417,7 +1437,10 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                 if len(active_values) == 1:
                     chosen_val = active_values[0]
                     voter_key = next((k for k, v in crit_votes.items() if v == chosen_val), list(crit_votes.keys())[0])
-                    agree_str = f"Live 100% inference ({voter_key})"
+                    if total_voters < 3:
+                        agree_str = f"{total_voters} of 4 APIs ({voter_key} - Quorum Not Reached, Human Review)"
+                    else:
+                        agree_str = f"{total_voters} of {total_voters} APIs concordant"
                     freq = total_voters if substantive_values else 1
                     concordance_ratio = 1.0 if substantive_values else (1.0 / total_voters)
                 elif is_multi_element or any(len(str(x).split()) > 4 for x in active_values):
@@ -1568,10 +1591,11 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                     if is_anom:
                         computed_conf = 0.0
                     elif total_voters > 1:
-                        # Full 100.0% confidence when all models are unanimous!
+                        # Confidence scaled by multi-model concordance
                         computed_conf = round(raw_model_avg * concordance_ratio, 1)
                     else:
-                        computed_conf = raw_model_avg
+                        # Single model voter baseline
+                        computed_conf = round(raw_model_avg * 0.90, 1)
 
                     # Universal Mathematical Span Coverage Recall Verification
                     if target_text and not has_visual_metadata:

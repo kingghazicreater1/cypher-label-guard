@@ -313,6 +313,28 @@ def cmd_report(a):
     maj_k = sum(maj_ok.get(it["id"], False) for it, _ in rows)
     P(f"- Simple majority of the provider votes: {pct(maj_k, n):.1f}%  ({maj_k}/{n})")
     P("")
+
+    # Matched-Subset Comparison (Zero-Coverage-Bias: only items where ALL active models voted)
+    all_apis = sorted(per_api.keys())
+    matched_items = [it["id"] for it, r in answered if len(all_apis) >= 2 and all(it["id"] in per_api[api] for api in all_apis)]
+    if matched_items:
+        m_n = len(matched_items)
+        m_cons_k = sum(cons_ok[i] for i in matched_items)
+        P(f"## Matched-Subset Analysis (Zero Coverage Bias: {m_n} items where ALL {len(all_apis)} models voted)")
+        P(f"- **Consensus: {pct(m_cons_k, m_n):.1f}%** ({m_cons_k}/{m_n})")
+        for api in all_apis:
+            m_api_k = sum(per_api[api][i] for i in matched_items)
+            P(f"- {api}: {pct(m_api_k, m_n):.1f}% ({m_api_k}/{m_n})")
+        m_maj_k = sum(maj_ok[i] for i in matched_items)
+        P(f"- Simple Majority: {pct(m_maj_k, m_n):.1f}% ({m_maj_k}/{m_n})")
+        P("")
+
+    # Quorum and Parliamentary Decision Audit
+    decisions = Counter(r.get("decision") or "UNKNOWN" for _, r in answered)
+    P("## Quorum & Parliamentary Decisions")
+    for dec, cnt in decisions.most_common():
+        P(f"- **{dec}**: {cnt}/{na} ({pct(cnt, na):.1f}%)")
+    P("")
  
     verdict = "Provider votes response mein nahi aaye, single-model comparison nahi ban saka."
     if best_name:
