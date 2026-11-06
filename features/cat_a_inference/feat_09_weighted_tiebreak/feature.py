@@ -53,7 +53,7 @@ class ContextualWeightedTieBreakFeature(BaseFeature):
         # ======================================================================
         # 1. THE GATE: Only open if there is genuine deadlock / disagreement
         # ======================================================================
-        if not (is_stalemate or (is_unconfirmed and has_label_split)):
+        if not (has_label_split and (is_stalemate or is_unconfirmed)):
             # Gate remains closed: Unanimous or already confirmed (0 extra cost/latency)
             return context
 
@@ -138,7 +138,26 @@ class ContextualWeightedTieBreakFeature(BaseFeature):
         If live API keys are present, dispatches to LLM; otherwise uses deterministic
         evidence-grounded adjudication.
         """
-        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("GROQ_API_KEY")
+        groq_k = os.getenv("GROQ_API_KEY")
+        openrouter_k = os.getenv("OPENROUTER_API_KEY")
+        openai_k = os.getenv("OPENAI_API_KEY")
+
+        if groq_k:
+            api_key = groq_k
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        elif openrouter_k:
+            api_key = openrouter_k
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+        elif openai_k:
+            api_key = openai_k
+            url = "https://api.openai.com/v1/chat/completions"
+            model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        else:
+            api_key = None
+            url = ""
+            model = ""
         
         if api_key and (hyp_a != hyp_b) and (hyp_a != "Unknown"):
             try:
@@ -161,10 +180,6 @@ class ContextualWeightedTieBreakFeature(BaseFeature):
                     "}"
                 )
                 
-                url = "https://api.groq.com/openai/v1/chat/completions" if os.getenv("GROQ_API_KEY") else (
-                    "https://openrouter.ai/api/v1/chat/completions" if os.getenv("OPENROUTER_API_KEY") else "https://api.openai.com/v1/chat/completions"
-                )
-                model = "llama-3.3-70b-versatile" if os.getenv("GROQ_API_KEY") else "gpt-4o-mini"
                 headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                 
                 async with httpx.AsyncClient(timeout=4.0) as client:

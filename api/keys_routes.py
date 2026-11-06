@@ -25,7 +25,7 @@ DEFAULT_MODELS = {
     "openrouter": "nvidia/nemotron-3.5-lightning:free",
     "openai": "gpt-4o-mini",
     "claude": "claude-3-5-sonnet-20241022",
-    "gemini": "gemini-1.5-flash",
+    "gemini": "gemini-flash-lite-latest",
     "mistral": "mistral-large-2407",
 }
 
@@ -38,7 +38,7 @@ class KeyUpdateRequest(BaseModel):
     anthropic_key: Optional[str] = Field(default=None, description="Anthropic Claude API Key (sk-ant-...)")
     anthropic_model: Optional[str] = Field(default=None, description="Claude Model ID (e.g. claude-3-5-sonnet-20241022)")
     gemini_key: Optional[str] = Field(default=None, description="Google Gemini API Key (AIza...)")
-    gemini_model: Optional[str] = Field(default=None, description="Gemini Model ID (e.g. gemini-1.5-flash, gemini-2.0-flash)")
+    gemini_model: Optional[str] = Field(default=None, description="Gemini Model ID (e.g. gemini-flash-lite-latest, gemini-2.0-flash)")
     mistral_key: Optional[str] = Field(default=None, description="Mistral AI API Key")
     mistral_model: Optional[str] = Field(default=None, description="Mistral Model ID (e.g. mistral-large-2407)")
     openrouter_key: Optional[str] = Field(default=None, description="OpenRouter API Key (sk-or-v1-...)")
