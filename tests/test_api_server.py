@@ -87,7 +87,7 @@ class TestApiServer(unittest.TestCase):
         self.assertIn("EMERGENCY PANIC FLUSH COMPLETE", data["message"])
 
     def test_05_connection_pools_endpoint(self):
-        resp = self.client.get("/api/v2/pools")
+        resp = self.client.get("/api/v2/pools", headers=self.auth_headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["total_capacity"], 500)

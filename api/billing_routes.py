@@ -112,9 +112,6 @@ def validate_luhn(card_number: str) -> bool:
     digits = [int(c) for c in card_number if c.isdigit()]
     if len(digits) < 13:
         return False
-    # Standard Stripe/Dev test cards
-    if card_number.startswith(("42424242", "40000560", "55555555")):
-        return True
     checksum = 0
     reverse_digits = digits[::-1]
     for i, digit in enumerate(reverse_digits):
@@ -130,9 +127,13 @@ def validate_luhn(card_number: str) -> bool:
 def add_card(req: AddCardRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Adds a new credit card with strict validation (Luhn checksum, expiry check, CVV).
-    If STRIPE_SECRET_KEY is configured, calls Stripe API to tokenize and attach card.
-    Otherwise, processes securely in sandbox mode and saves PCI-compliant metadata.
+    Requires live Stripe configuration so unverified test cards cannot mint credits.
     """
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Card registration is not available yet: commercial payment processing (Stripe) is not configured on this server."
+        )
     cleaned = req.card_number.replace(" ", "").replace("-", "")
     if len(cleaned) < 13 or len(cleaned) > 19:
         raise HTTPException(status_code=400, detail="Invalid card number length. Must be 13 to 19 digits.")
@@ -250,6 +251,11 @@ def set_default_card(card_id: str, user: User = Depends(get_current_user), db: S
 @router.post("/subscription")
 def update_subscription(req: ChangePlanRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Upgrade or downgrade subscription plan (Basic $19, Master $49, Max $99, Team $499)."""
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Plan upgrades are not available yet: commercial payment processing (Stripe) is not configured on this server."
+        )
     prices = {
         "Free": 0.0,
         "Basic": 19.00,
@@ -261,7 +267,7 @@ def update_subscription(req: ChangePlanRequest, user: User = Depends(get_current
         "Enterprise": 499.00,
     }
     plan_credits = {
-        "Free": 500,
+        "Free": 0,
         "Basic": 2500,
         "Master": 7500,
         "Max": 20000,
@@ -274,8 +280,15 @@ def update_subscription(req: ChangePlanRequest, user: User = Depends(get_current
         raise HTTPException(status_code=400, detail="Invalid plan name. Choose Basic, Master, Max, or Team.")
 
     price = prices[req.plan_name]
-    credits_to_add = plan_credits.get(req.plan_name, 2500)
+    credits_to_add = plan_credits.get(req.plan_name, 0)
     now = datetime.now(timezone.utc)
+
+    sub = user.subscriptions[0] if user.subscriptions else None
+    if sub and sub.plan_name == req.plan_name and sub.status == "Active":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workspace is already actively subscribed to the {req.plan_name} edition."
+        )
 
     # STRICT PAYMENT METHOD ENFORCEMENT: No free plan activations for paid packages!
     charged_card_str = "No payment required (Free Tier)"
@@ -294,15 +307,18 @@ def update_subscription(req: ChangePlanRequest, user: User = Depends(get_current
                 detail=f"Payment Declined: Card ending in {primary_card.last4} has expired ({primary_card.exp_month}/{primary_card.exp_year}). Please update your payment card."
             )
 
-        auth_id = f"AUTH_{uuid.uuid4().hex[:8].upper()}"
-        charged_card_str = f"Paid via {primary_card.card_brand.upper()} ending in {primary_card.last4} [Gateway Auth: {auth_id}]"
-
-    sub = user.subscriptions[0] if user.subscriptions else None
-    if sub and sub.plan_name == req.plan_name and sub.status == "Active":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workspace is already actively subscribed to the {req.plan_name} edition."
-        )
+        try:
+            charge = stripe.Charge.create(
+                amount=int(price * 100),
+                currency="usd",
+                description=f"CypherLabelGuard {req.plan_name} Plan Subscription for {user.email}",
+                customer=user.stripe_customer_id or None,
+                source=primary_card.stripe_payment_method_id or None,
+            )
+            auth_id = charge.id
+            charged_card_str = f"Paid via {primary_card.card_brand.upper()} ending in {primary_card.last4} [Stripe Charge: {auth_id}]"
+        except Exception as e:
+            raise HTTPException(status_code=402, detail=f"Subscription payment declined by gateway: {str(e)}")
 
     if not sub:
         sub = Subscription(

@@ -25,50 +25,42 @@ class CreateFolderRequest(BaseModel):
 
 @router.get("/folders")
 def get_folders(
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns all available folders from both FolderRecord and JobRecord with tenant isolation."""
-    rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
-    job_folders = set()
-    if user:
-        if getattr(user, "role", None) == "Administrator":
-            job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
-        else:
-            job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+    """Returns available folders strictly isolated to the authenticated user."""
+    if getattr(user, "role", None) == "Administrator":
+        rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
     else:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id.is_(None)).distinct().all() if f[0]}
-    all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+        all_folders = sorted(list(job_folders | {"General Workspace"}))
     return {"success": True, "folders": all_folders}
 
 
 @router.post("/folders")
 def create_folder(
     req: CreateFolderRequest,
-    user: Optional[User] = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Creates a new persistent folder in the database."""
+    """Creates a new folder for the authenticated user."""
     clean_name = req.name.strip()
     if not clean_name:
         clean_name = "General Workspace"
 
-    existing = db.query(FolderRecord).filter(FolderRecord.name == clean_name).first()
-    if not existing:
-        new_folder = FolderRecord(name=clean_name)
-        db.add(new_folder)
-        db.commit()
-
-    rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
-    job_folders = set()
-    if user:
-        if getattr(user, "role", None) == "Administrator":
-            job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
-        else:
-            job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+    if getattr(user, "role", None) == "Administrator":
+        existing = db.query(FolderRecord).filter(FolderRecord.name == clean_name).first()
+        if not existing:
+            db.add(FolderRecord(name=clean_name))
+            db.commit()
+        rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        all_folders = sorted(list(rec_folders | job_folders | {clean_name, "General Workspace"}))
     else:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id.is_(None)).distinct().all() if f[0]}
-    all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+        all_folders = sorted(list(job_folders | {clean_name, "General Workspace"}))
     return {"success": True, "folder": clean_name, "folders": all_folders}
 
 
@@ -97,10 +89,14 @@ def get_job_history(
 
     jobs = query.order_by(JobRecord.created_at.desc()).limit(limit).all()
 
-    # Collect all unique folder names
-    rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
-    job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
-    all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
+    # Collect unique folder names strictly isolated to the user (unless Administrator)
+    if getattr(user, "role", None) == "Administrator":
+        rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
+    else:
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+        all_folders = sorted(list(job_folders | {"General Workspace"}))
 
     return {
         "success": True,

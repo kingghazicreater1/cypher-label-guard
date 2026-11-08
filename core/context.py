@@ -211,17 +211,23 @@ class ExecutionContext:
         if metadata:
             new_metadata.update(metadata)
 
+        def _safe_clone_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                k: (v if isinstance(v, (str, bytes, int, float, bool, type(None))) else copy.deepcopy(v))
+                for k, v in d.items()
+            }
+
         return ExecutionContext(
             session_id=self._session_id,
             tenant_id=self._tenant_id,
             trace_id=self._trace_id,
-            input_payload=dict(input_payload) if input_payload is not None else dict(self._input_payload),
+            input_payload=_safe_clone_dict(input_payload) if input_payload is not None else _safe_clone_dict(self._input_payload),
             depth_tier=depth_tier or self._depth_tier,
             votes=votes if votes is not None else list(self._votes),
             lineage_chain=lineage_chain if lineage_chain is not None else list(self._lineage_chain),
-            flags=new_flags,
-            ephemeral_store=new_ephemeral,
-            metadata=new_metadata,
+            flags=_safe_clone_dict(new_flags),
+            ephemeral_store=_safe_clone_dict(new_ephemeral),
+            metadata=_safe_clone_dict(new_metadata),
             created_at=self._created_at,
             is_purged=is_purged if is_purged is not None else self._is_purged,
         )

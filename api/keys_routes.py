@@ -90,7 +90,7 @@ def _save_to_dotenv(updates: Dict[str, str]):
 # 1. Get Live Status of All Multi-Model Providers
 # ------------------------------------------------------------------------------
 @router.get("/status")
-async def get_keys_status(user: Optional[User] = Depends(get_optional_current_user)):
+async def get_keys_status(user: User = Depends(get_current_user)):
     """
     Returns configuration status, masked tokens, and user's desired model names
     for all Parliamentary APIs.

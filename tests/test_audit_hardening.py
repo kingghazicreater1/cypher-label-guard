@@ -194,11 +194,35 @@ class TestAuditHardening(unittest.TestCase):
         self.assertNotIn("Loaded local specimen file", evolved.input_payload.get("text", ""))
 
     def test_pools_leased_never_negative(self):
-        res = self.client.get("/api/v2/pools")
+        # Guest is denied with 401
+        self.assertEqual(self.client.get("/api/v2/pools").status_code, 401)
+        res = self.client.get("/api/v2/pools", headers=self.a_headers)
         self.assertEqual(res.status_code, 200)
         for prov, stats in res.json().get("providers", {}).items():
             self.assertGreaterEqual(stats["leased"], 0, f"Provider {prov} has negative leased slots")
             self.assertEqual(stats["max_slots"], 125)
+
+    def test_billing_subscription_and_cards_blocked_without_stripe(self):
+        from api import billing_routes
+        with mock.patch.object(billing_routes, "STRIPE_SECRET_KEY", ""):
+            r1 = self.client.post("/api/v2/billing/cards", json={
+                "card_number": "4242424242424242", "exp_month": 12, "exp_year": 2030, "cvc": "123",
+            }, headers=self.a_headers)
+            self.assertEqual(r1.status_code, 503)
+            r2 = self.client.post("/api/v2/billing/subscription", json={"plan_name": "Team"}, headers=self.a_headers)
+            self.assertEqual(r2.status_code, 503)
+
+    def test_folders_and_keys_status_require_auth_and_isolate_tenants(self):
+        # Guests blocked on folders and keys/status
+        self.assertEqual(self.client.get("/api/v2/history/folders").status_code, 401)
+        self.assertEqual(self.client.post("/api/v2/history/folders", json={"name": "SecretFolder"}).status_code, 401)
+        self.assertEqual(self.client.get("/api/v2/keys/status").status_code, 401)
+        # User A creates a folder; User B must not see User A's folder in GET /history/folders
+        res_a = self.client.post("/api/v2/history/folders", json={"name": "UserAPrivateFolder"}, headers=self.a_headers)
+        self.assertEqual(res_a.status_code, 200)
+        res_b = self.client.get("/api/v2/history/folders", headers=self.b_headers)
+        self.assertEqual(res_b.status_code, 200)
+        self.assertNotIn("UserAPrivateFolder", res_b.json()["folders"])
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ class TestJob680488CascadeIsolation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        import os
+        os.environ["ALLOW_GUEST_INFERENCE"] = "true"
         cls.client = TestClient(app)
 
         # Generate 200x200 synthetic blue running shoe image

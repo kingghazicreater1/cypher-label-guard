@@ -32,7 +32,7 @@ class TestFullstackE2EIntegration(unittest.TestCase):
 
     def test_02_connection_pool_500_slots(self):
         """Verify 500 managed connection slots distributed evenly across 4 providers."""
-        res = self.client.get("/api/v2/pools")
+        res = self.client.get("/api/v2/pools", headers=self.auth_headers)
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["total_capacity"], 500)

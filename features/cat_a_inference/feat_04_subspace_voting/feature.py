@@ -4,7 +4,7 @@ import os
 import random
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from core.base_feature import BaseFeature
 from core.context import ExecutionContext, VoteRecord
 

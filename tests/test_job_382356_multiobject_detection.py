@@ -22,6 +22,8 @@ class TestJob382356MultiObjectDetection(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        import os
+        os.environ["ALLOW_GUEST_INFERENCE"] = "true"
         cls.client = TestClient(app)
 
         # Generate a test canvas (400x600) with Laptop, Red Apple, Smartphone, Lens Cap
