@@ -31,7 +31,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(100), nullable=False, default="Enterprise User")
-    role = Column(String(50), nullable=False, default="Administrator")
+    role = Column(String(50), nullable=False, default="User")
     workspace_name = Column(String(100), nullable=False, default="Enterprise Workspace")
     credits_balance = Column(Integer, default=5000)  # Default 5,000 token credits (~$50.00)
     stripe_customer_id = Column(String(100), nullable=True)

@@ -223,7 +223,9 @@ export async function getCriteriaTemplates(): Promise<CriteriaTemplate[]> {
  * Retrieves the complete 1-click forensic Prove-It audit dossier.
  */
 export async function getProveItDossier(traceId: string): Promise<ProveItDossier> {
-  const resp = await fetch(`${API_BASE_URL}/api/v2/prove-it/${traceId}`);
+  const resp = await fetch(`${API_BASE_URL}/api/v2/prove-it/${traceId}`, {
+    headers: getAuthHeaders(),
+  });
   if (!resp.ok) {
     throw new Error(`Failed to fetch Prove-It dossier for Trace ${traceId}`);
   }
@@ -237,9 +239,13 @@ export async function getProveItDossier(traceId: string): Promise<ProveItDossier
 export async function triggerPanicFlush(reason: string = "User initiated emergency flush"): Promise<any> {
   const resp = await fetch(`${API_BASE_URL}/api/v2/panic-flush`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ reason }),
   });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: "Panic flush requires Administrator privileges" }));
+    throw new Error(err.detail || "Panic flush failed");
+  }
   return await resp.json();
 }
 

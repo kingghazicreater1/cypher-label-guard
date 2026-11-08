@@ -199,18 +199,19 @@ async def _execute_batch_job(
     total = len(rows)
     semaphore = asyncio.Semaphore(10)  # 10 parallel pipeline passes
     
-    labeled_rows = []
+    ordered_rows: List[Optional[Dict[str, Any]]] = [None] * total
+    completed_count = 0
     running_conf_sum = 0.0
 
     async def _process_single_row(idx: int, row_data: Dict[str, str]):
-        nonlocal running_conf_sum
+        nonlocal running_conf_sum, completed_count
         async with semaphore:
             text_val = str(row_data.get(target_column, ""))
             
             effective_depth = depth_tier
 
             ctx = ExecutionContext(
-                tenant_id="batch_tenant",
+                tenant_id=f"user_{user_id}" if user_id else "batch_tenant",
                 depth_tier=effective_depth,
                 input_payload={
                     "text": text_val,
@@ -237,47 +238,53 @@ async def _execute_batch_job(
                 augmented_row["Lineage_Hash"] = final_ctx.metadata.get("final_lineage_hash", "")[:16]
                 
                 running_conf_sum += overall_conf
-                labeled_rows.append(augmented_row)
+                ordered_rows[idx] = augmented_row
+                completed_count += 1
                 
-                batch_state["completed_rows"] = len(labeled_rows)
-                batch_state["progress_pct"] = round((len(labeled_rows) / total) * 100.0, 1)
-                batch_state["overall_confidence"] = round(running_conf_sum / len(labeled_rows), 1)
+                batch_state["completed_rows"] = completed_count
+                batch_state["progress_pct"] = round((completed_count / total) * 100.0, 1)
+                batch_state["overall_confidence"] = round(running_conf_sum / completed_count, 1)
                 batch_state["current_item"] = f"Row #{idx + 1}: {text_val[:35]}..."
             except Exception as row_err:
                 augmented_row = dict(row_data)
                 logger.warning("Batch %s row %s failed: %s", batch_id, idx, type(row_err).__name__)
                 augmented_row["Overall_Confidence"] = "0.0%"
                 augmented_row["Parliament_Decision"] = "ERROR_UNVERIFIED"
-                labeled_rows.append(augmented_row)
+                ordered_rows[idx] = augmented_row
+                completed_count += 1
                 batch_state["failed_rows"] = batch_state.get("failed_rows", 0) + 1
-                batch_state["completed_rows"] = len(labeled_rows)
-                batch_state["progress_pct"] = round((len(labeled_rows) / total) * 100.0, 1)
+                batch_state["completed_rows"] = completed_count
+                batch_state["progress_pct"] = round((completed_count / total) * 100.0, 1)
 
     tasks = [_process_single_row(i, row) for i, row in enumerate(rows)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     worker_crashed = any(isinstance(r, BaseException) for r in results)
 
+    labeled_rows = [r for r in ordered_rows if r is not None]
     failed = batch_state.get("failed_rows", 0)
     batch_state["status"] = "FAILED" if (worker_crashed or failed >= total) else "COMPLETED"
     batch_state["labeled_rows"] = labeled_rows
     batch_state["end_timestamp"] = time.time()
     batch_state["elapsed_seconds"] = round(time.time() - batch_state["start_timestamp"], 1)
 
-    # Persist job record to database
+    # Persist job record to database and reconcile credits
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.id == user_id).first() if user_id else None
         target_uid = user.id if user else None
         if target_uid:
+            charged_rows = max(0, total - failed)
+            if user and getattr(user, "credits_balance", None) is not None:
+                user.credits_balance = max(0, user.credits_balance - charged_rows)
             job_rec = JobRecord(
                 user_id=target_uid,
-                job_number=str(int(time.time() * 10) % 900000 + 10000),
+                job_number=f"{int(time.time() * 1000) % 900000 + 100000}-{uuid.uuid4().hex[:4]}",
                 name=f"{name} ({total} items)",
                 modality="CSV Batch",
                 status="Completed",
                 progress=100,
                 labels_count=total,
-                cost=f"${total * 0.001:.2f}",
+                cost=f"${charged_rows * 0.001:.2f}",
                 consensus_label="CONFIRMED" if batch_state["status"] == "COMPLETED" and not failed else "PARTIAL_UNVERIFIED",
                 affirmative_votes=0,
                 trace_id=batch_id,
@@ -307,6 +314,10 @@ async def start_batch_processing(
         rows = list(reader)
         if not rows:
             raise HTTPException(status_code=400, detail="Provided CSV contains no data rows.")
+        if len(rows) > 5000:
+            raise HTTPException(status_code=400, detail=f"CSV batch exceeds maximum of 5,000 rows (got {len(rows)}).")
+        if getattr(user, "credits_balance", 1) <= 0:
+            raise HTTPException(status_code=402, detail="Payment Required: Insufficient credits balance to start CSV batch.")
 
         if req.target_column not in (reader.fieldnames or []):
             raise HTTPException(status_code=400, detail=f"Target column '{req.target_column}' not found in CSV headers.")

@@ -70,8 +70,16 @@ class ContextualWeightedTieBreakFeature(BaseFeature):
         # Extract available evidence context
         input_text = context.input_payload.get("text", "") or ""
         salient_clause = context.metadata.get("salient_clause", "") or input_text[:600]
-        detected_objects = context.metadata.get("detected_objects", []) or []
-        detected_color = context.metadata.get("detected_color", "") or ""
+        detected_objects = (
+            context.metadata.get("visual_detected_objects")
+            or context.metadata.get("detected_objects")
+            or []
+        )
+        detected_color = (
+            context.metadata.get("visual_dominant_color")
+            or context.metadata.get("detected_color")
+            or ""
+        )
 
         evidence_summary = (
             f"Input Sample: '{salient_clause}'. "
@@ -181,27 +189,28 @@ class ContextualWeightedTieBreakFeature(BaseFeature):
                 )
                 
                 headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                
-                async with httpx.AsyncClient(timeout=4.0) as client:
-                    resp = await client.post(
-                        url,
-                        headers=headers,
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": judge_prompt}],
-                            "temperature": 0.0,
-                            "response_format": {"type": "json_object"},
+                from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
+                client = get_shared_client()
+                resp = await client.post(
+                    url,
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": judge_prompt}],
+                        "temperature": 0.0,
+                        "response_format": {"type": "json_object"},
+                    },
+                    timeout=4.0,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    parsed = json.loads(content)
+                    if parsed.get("winner") in (hyp_a, hyp_b):
+                        return {
+                            "winner": parsed["winner"],
+                            "rationale": f"Adversarial LLM Arbitration: {parsed.get('rationale', 'Evidence verified.')}",
                         }
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        content = data["choices"][0]["message"]["content"]
-                        parsed = json.loads(content)
-                        if parsed.get("winner") in (hyp_a, hyp_b):
-                            return {
-                                "winner": parsed["winner"],
-                                "rationale": f"Adversarial LLM Arbitration: {parsed.get('rationale', 'Evidence verified.')}",
-                            }
             except Exception as e:
                 logger.debug(f"Live debate LLM call failed or timed out: {e}. Falling back to deterministic debate.")
 

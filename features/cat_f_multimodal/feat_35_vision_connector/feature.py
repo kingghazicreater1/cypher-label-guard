@@ -271,13 +271,7 @@ class VisionConnectorFeature(BaseFeature):
                     visual_attributes.append(f"Decoded raw raster buffer: {len(raw_image_bytes) // 1024} KB")
                 except Exception as _exc:
                     _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
-            elif os.path.exists(str_data) and os.path.isfile(str_data):
-                try:
-                    with open(str_data, "rb") as f:
-                        raw_image_bytes = f.read()
-                    visual_attributes.append(f"Loaded local specimen file: {os.path.basename(str_data)}")
-                except Exception as _exc:
-                    _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
+            # Security Hardening: Arbitrary local file path reading (LFI) is strictly disabled.
 
         # 2. Extract verified visual characteristics & detected objects from image raster
         detected_objects = []
@@ -418,65 +412,66 @@ class VisionConnectorFeature(BaseFeature):
                         ],
                         "max_tokens": 800,
                     }
-                    async with httpx.AsyncClient(timeout=25.0) as client:
-                        resp = await client.post(vision_url, headers=vision_headers, json=v_payload)
-                        if resp.status_code == 200:
-                            v_data = resp.json()
-                            raw_reply = v_data["choices"][0]["message"]["content"].strip()
-                            clean_json = raw_reply
-                            if "```json" in clean_json:
-                                clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
-                            elif "```" in clean_json:
-                                clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
-                            parsed = json.loads(clean_json)
-                            ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
-                            if parsed.get("objects"):
-                                api_objects = parsed["objects"]
-                                non_abstract_api = [o for o in api_objects if o.strip().lower() not in ABSTRACT_SHAPES]
-                                if non_abstract_api:
-                                    detected_objects = api_objects
-                                else:
-                                    non_abstract_cv2 = [o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES]
-                                    if non_abstract_cv2:
-                                        detected_objects = non_abstract_cv2
-                                    else:
-                                        detected_objects = api_objects
-                            if parsed.get("primary_product"):
-                                p_cand = parsed["primary_product"]
-                                # Sanitize action phrases like "warehouse inventory scanning" -> "Barcode Scanner"
-                                if any(act in p_cand.lower() for act in ["scanning", "inventory scanning", "warehouse scanning", "operation"]):
-                                    scanner_tool = next((o for o in detected_objects if "scanner" in o.lower()), None)
-                                    if scanner_tool:
-                                        p_cand = f"Industrial {scanner_tool.title()}"
-                                    elif detected_objects:
-                                        p_cand = detected_objects[0].title()
-                                if p_cand.strip().lower() not in ABSTRACT_SHAPES:
-                                    primary_product_name = p_cand
-                                elif detected_objects and any(o.strip().lower() not in ABSTRACT_SHAPES for o in detected_objects):
-                                    primary_product_name = ", ".join(o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES)
-                                else:
-                                    primary_product_name = p_cand
-                            if parsed.get("item_colors"):
-                                item_colors_desc = parsed["item_colors"]
-                            if parsed.get("item_count") is not None:
-                                try:
-                                    item_count_val = int(parsed["item_count"])
-                                except (ValueError, TypeError):
-                                    item_count_val = len(detected_objects) if detected_objects else 1
+                    from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
+                    client = get_shared_client()
+                    resp = await client.post(vision_url, headers=vision_headers, json=v_payload, timeout=25.0)
+                    if resp.status_code == 200:
+                        v_data = resp.json()
+                        raw_reply = v_data["choices"][0]["message"]["content"].strip()
+                        clean_json = raw_reply
+                        if "```json" in clean_json:
+                            clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                        elif "```" in clean_json:
+                            clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                        parsed = json.loads(clean_json)
+                        ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
+                        if parsed.get("objects"):
+                            api_objects = parsed["objects"]
+                            non_abstract_api = [o for o in api_objects if o.strip().lower() not in ABSTRACT_SHAPES]
+                            if non_abstract_api:
+                                detected_objects = api_objects
                             else:
+                                non_abstract_cv2 = [o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES]
+                                if non_abstract_cv2:
+                                    detected_objects = non_abstract_cv2
+                                else:
+                                    detected_objects = api_objects
+                        if parsed.get("primary_product"):
+                            p_cand = parsed["primary_product"]
+                            # Sanitize action phrases like "warehouse inventory scanning" -> "Barcode Scanner"
+                            if any(act in p_cand.lower() for act in ["scanning", "inventory scanning", "warehouse scanning", "operation"]):
+                                scanner_tool = next((o for o in detected_objects if "scanner" in o.lower()), None)
+                                if scanner_tool:
+                                    p_cand = f"Industrial {scanner_tool.title()}"
+                                elif detected_objects:
+                                    p_cand = detected_objects[0].title()
+                            if p_cand.strip().lower() not in ABSTRACT_SHAPES:
+                                primary_product_name = p_cand
+                            elif detected_objects and any(o.strip().lower() not in ABSTRACT_SHAPES for o in detected_objects):
+                                primary_product_name = ", ".join(o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES)
+                            else:
+                                primary_product_name = p_cand
+                        if parsed.get("item_colors"):
+                            item_colors_desc = parsed["item_colors"]
+                        if parsed.get("item_count") is not None:
+                            try:
+                                item_count_val = int(parsed["item_count"])
+                            except (ValueError, TypeError):
                                 item_count_val = len(detected_objects) if detected_objects else 1
-                            
-                            human_present_val = bool(parsed.get("human_present"))
-                            human_details_val = str(parsed.get("human_details") or "None")
-                            is_edible_val = bool(parsed.get("is_edible"))
-                            is_living_val = bool(parsed.get("is_living"))
-                            damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")
-                            brand_val = str(parsed.get("brand_or_logo") or "Unbranded")
-                            visible_text_val = str(parsed.get("visible_text") or "None")
-                            background_val = str(parsed.get("background") or "Standard")
-                            scene_type_val = str(parsed.get("scene_type") or "Product Image")
+                        else:
+                            item_count_val = len(detected_objects) if detected_objects else 1
+                        
+                        human_present_val = bool(parsed.get("human_present"))
+                        human_details_val = str(parsed.get("human_details") or "None")
+                        is_edible_val = bool(parsed.get("is_edible"))
+                        is_living_val = bool(parsed.get("is_living"))
+                        damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")
+                        brand_val = str(parsed.get("brand_or_logo") or "Unbranded")
+                        visible_text_val = str(parsed.get("visible_text") or "None")
+                        background_val = str(parsed.get("background") or "Standard")
+                        scene_type_val = str(parsed.get("scene_type") or "Product Image")
 
-                            visual_summary = f"Verified Vision Analysis ({vision_model}): {raw_reply}"
+                        visual_summary = f"Verified Vision Analysis ({vision_model}): {raw_reply}"
             except Exception as e:
                 pass  # Graceful fallback to zero-retention local analyzer
 
@@ -550,7 +545,6 @@ class VisionConnectorFeature(BaseFeature):
         metadata["visual_background"] = background_val if "background_val" in locals() else "Neutral Surface"
         metadata["visual_scene_type"] = scene_type_val if "scene_type_val" in locals() else "Inspection Specimen"
         metadata["visual_bounding_boxes"] = yolo_boxes if "yolo_boxes" in locals() else []
-        metadata["visual_local_yolo_active"] = bool(yolo_boxes) if "yolo_boxes" in locals() else False
         metadata["visual_local_yolo_active"] = bool(yolo_boxes) if "yolo_boxes" in locals() else False
 
         new_flags = dict(context.flags)

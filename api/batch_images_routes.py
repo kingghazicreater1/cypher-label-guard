@@ -37,6 +37,29 @@ IMAGE_CONCURRENCY = max(1, int(os.getenv("BATCH_IMAGE_CONCURRENCY", "20")))
 CREDIT_COST = {"Fast": 1, "Standard": 5, "Deep": 20}
 
 IMAGE_BATCH_REGISTRY: Dict[str, Dict[str, Any]] = {}
+IMAGE_BATCH_TTL_SECONDS = 3600
+
+
+def _evict_stale_image_batches() -> None:
+    """Evicts completed/failed image batches older than TTL to bound RAM usage."""
+    now = time.time()
+    stale = [
+        bid for bid, b in list(IMAGE_BATCH_REGISTRY.items())
+        if b.get("status") in ("COMPLETED", "FAILED")
+        and (now - b.get("start_ts", now)) > IMAGE_BATCH_TTL_SECONDS
+    ]
+    for bid in stale:
+        IMAGE_BATCH_REGISTRY.pop(bid, None)
+
+
+def _sanitize_csv_cell(val: Any) -> Any:
+    """Prevents CSV formula injection in spreadsheet applications."""
+    if isinstance(val, str) and val and val[0] in ("=", "+", "-", "@", "\t", "\r"):
+        # Allow plain negative numbers like "-12.5"
+        if val[0] == "-" and val[1:].replace(".", "", 1).isdigit():
+            return val
+        return f"'{val}"
+    return val
 
 
 class BatchImageItem(BaseModel):
@@ -129,19 +152,22 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
 
     await asyncio.gather(*[_one(it) for it in state["items"]])
 
-    # Persist results + charge credits only for photos that actually completed.
+    # Persist results + reconcile pre-authorized credits (refund any failed photos).
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         completed = [i for i in state["items"] if i["status"] == "COMPLETED"]
+        actual_charge = cost_each * len(completed)
+        precharged = state.get("precharged_credits", cost_each * state["total"])
+        refund = max(0, precharged - actual_charge)
         if user:
-            charge = min(user.credits_balance, cost_each * len(completed))
-            user.credits_balance -= charge
-            state["credits_charged"] = charge
-            for it in completed:
+            if refund > 0:
+                user.credits_balance += refund
+            state["credits_charged"] = actual_charge
+            for idx_c, it in enumerate(completed):
                 db.add(JobRecord(
                     user_id=user.id,
-                    job_number=str(int(time.time() * 1000) % 900000 + 10000 + state["items"].index(it)),
+                    job_number=f"{int(time.time() * 1000) % 900000 + 100000}-{uuid.uuid4().hex[:4]}",
                     folder_name=state["folder_name"],
                     name=it["name"],
                     modality="Image",
@@ -236,6 +262,7 @@ async def start_image_batch(
 
     batch_name = (req.name or f"{len(valid_images)} Photos Inspection").strip() or f"{len(valid_images)} Photos Inspection"
     batch_id = f"imgbatch_{uuid.uuid4().hex[:12]}"
+    _evict_stale_image_batches()
 
     IMAGE_BATCH_REGISTRY[batch_id] = {
         "batch_id": batch_id,
@@ -250,6 +277,7 @@ async def start_image_batch(
         "failed": 0,
         "progress_pct": 0.0,
         "concurrency": IMAGE_CONCURRENCY,
+        "precharged_credits": needed,
         "credits_charged": 0,
         "start_ts": time.time(),
         "elapsed_seconds": 0.0,
@@ -271,11 +299,18 @@ async def start_image_batch(
 
 
 def _owned(batch_id: str, user: Optional[User]) -> Dict[str, Any]:
+    _evict_stale_image_batches()
     state = IMAGE_BATCH_REGISTRY.get(batch_id)
     if not state:
         raise HTTPException(status_code=404, detail="Image batch not found.")
-    if user and state.get("owner_id") and state.get("owner_id") != user.id and getattr(user, "role", "") != "admin":
-        raise HTTPException(status_code=403, detail="Access denied: You do not have permission to view this batch.")
+    owner_id = state.get("owner_id")
+    if owner_id:
+        if user is None:
+            allow_guest = os.getenv("ALLOW_GUEST_INFERENCE", "").lower() in ("1", "true", "yes")
+            if not allow_guest:
+                raise HTTPException(status_code=401, detail="Authentication required to view this image batch.")
+        elif owner_id != user.id and getattr(user, "role", "") not in ("Administrator", "admin"):
+            raise HTTPException(status_code=403, detail="Access denied: You do not have permission to view this batch.")
     return state
 
 
@@ -366,11 +401,16 @@ async def image_batch_report(
         out = io.StringIO()
         w = csv.DictWriter(out, fieldnames=headers_fn)
         w.writeheader()
-        w.writerows(rows)
+        sanitized_rows = [
+            {k: _sanitize_csv_cell(v) for k, v in r.items()}
+            for r in rows
+        ]
+        w.writerows(sanitized_rows)
         return Response(out.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{safe}_audit.csv"'})
 
     try:
+        from xml.sax.saxutils import escape as _xml_escape
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import getSampleStyleSheet
@@ -383,9 +423,9 @@ async def image_batch_report(
     st = getSampleStyleSheet()
     cn = [c["name"] for c in s["criteria"]]
     els = [
-        Paragraph(f"CypherLabelGuard - Batch Audit Report: {s['name']}", st["Title"]),
+        Paragraph(f"CypherLabelGuard - Batch Audit Report: {_xml_escape(str(s['name']))}", st["Title"]),
         Paragraph(
-            f"Folder: <b>{s['folder_name']}</b> &nbsp; Depth: <b>{s['depth_tier']}</b> &nbsp; "
+            f"Folder: <b>{_xml_escape(str(s['folder_name']))}</b> &nbsp; Depth: <b>{_xml_escape(str(s['depth_tier']))}</b> &nbsp; "
             f"Photos: <b>{s['total']}</b> &nbsp; Completed: <b>{s['total'] - s['failed']}</b> &nbsp; "
             f"Failed: <b>{s['failed']}</b> &nbsp; Credits: <b>{s['credits_charged']}</b> &nbsp; "
             f"Time: <b>{s['elapsed_seconds']}s</b>", st["Normal"]),
@@ -395,10 +435,10 @@ async def image_batch_report(
     data = [head]
     for r in rows:
         data.append([
-            Paragraph(str(r["Photo"])[:40], st["BodyText"]),
+            Paragraph(_xml_escape(str(r["Photo"])[:40]), st["BodyText"]),
             r["Status"],
             str(r["Overall_Confidence_%"]),
-            *[Paragraph(str(r.get(n, ""))[:40], st["BodyText"]) for n in cn],
+            *[Paragraph(_xml_escape(str(r.get(n, ""))[:40]), st["BodyText"]) for n in cn],
             r["Lineage_Hash"],
         ])
     tbl = Table(data, repeatRows=1)
@@ -414,7 +454,7 @@ async def image_batch_report(
     failed = [i for i in s["items"] if i["status"] == "FAILED"]
     if failed:
         els += [Spacer(1, 10), Paragraph("Failed photos (not charged):", st["Heading3"])]
-        els += [Paragraph(f"{i['name']}: {i.get('error', '')}", st["BodyText"]) for i in failed]
+        els += [Paragraph(f"{_xml_escape(str(i['name']))}: {_xml_escape(str(i.get('error', '')))}", st["BodyText"]) for i in failed]
     doc.build(els)
     return Response(buf.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{safe}_audit.pdf"'})

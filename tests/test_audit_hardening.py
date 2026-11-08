@@ -102,6 +102,104 @@ class TestAuditHardening(unittest.TestCase):
             resp = self.client.post("/api/v2/infer", json={"text": "hello world", "modality": "TEXT"})
             self.assertEqual(resp.status_code, 401)
 
+    # ---- root-cause hardening (LFI, Prove-It isolation, Image Batch, Pools) -
+    def test_image_batch_ownership_and_csv_sanitization(self):
+        from api import batch_images_routes
+        me = self.client.get("/api/v2/auth/me", headers=self.a_headers).json()
+        uid = me.get("id") or me.get("user", {}).get("id")
+        batch_images_routes.IMAGE_BATCH_REGISTRY["img_mine"] = {
+            "batch_id": "img_mine",
+            "owner_id": uid,
+            "name": "Audit Batch",
+            "folder_name": "General Workspace",
+            "depth_tier": "Fast",
+            "criteria": [{"name": "FormulaCheck", "type": "Free Text", "range": ""}],
+            "status": "COMPLETED",
+            "total": 1,
+            "done": 1,
+            "failed": 0,
+            "progress_pct": 100.0,
+            "concurrency": 5,
+            "credits_charged": 1,
+            "start_ts": time.time(),
+            "elapsed_seconds": 0.5,
+            "items": [{
+                "index": 0,
+                "name": "=CMD|' /C calc'!A0",
+                "status": "COMPLETED",
+                "decision": "CONFIRMED",
+                "votes": "32/32",
+                "overall_confidence": 95.0,
+                "criteria_results": [{"name": "FormulaCheck", "value": "+SUM(1,2)", "confidence": 95.0}],
+            }],
+        }
+        try:
+            # Owner can view status and report
+            self.assertEqual(
+                self.client.get("/api/v2/batch/images/status/img_mine", headers=self.a_headers).status_code,
+                200,
+            )
+            # Non-owner is blocked with 403
+            self.assertEqual(
+                self.client.get("/api/v2/batch/images/status/img_mine", headers=self.b_headers).status_code,
+                403,
+            )
+            # Unauthenticated caller is blocked when ALLOW_GUEST_INFERENCE is false
+            with mock.patch.dict(os.environ, {"ALLOW_GUEST_INFERENCE": "false"}):
+                self.assertEqual(
+                    self.client.get("/api/v2/batch/images/status/img_mine").status_code,
+                    401,
+                )
+            # CSV report neutralizes leading '=' and '+' formula characters
+            csv_res = self.client.get("/api/v2/batch/images/report/img_mine?format=csv", headers=self.a_headers)
+            self.assertEqual(csv_res.status_code, 200)
+            self.assertIn("'=CMD|", csv_res.text)
+            self.assertIn("'+SUM(1,2)", csv_res.text)
+        finally:
+            batch_images_routes.IMAGE_BATCH_REGISTRY.pop("img_mine", None)
+
+    def test_prove_it_dossier_tenant_isolation(self):
+        from api.server import PROVE_IT_REGISTRY
+        me = self.client.get("/api/v2/auth/me", headers=self.a_headers).json()
+        uid = me.get("id") or me.get("user", {}).get("id")
+        PROVE_IT_REGISTRY["trace_private_a"] = {
+            "trace_id": "trace_private_a",
+            "_owner_id": uid,
+            "total_votes": 32,
+            "lineage_unbroken": True,
+        }
+        try:
+            # Owner A succeeds and internal _owner_id is stripped from response
+            res_a = self.client.get("/api/v2/prove-it/trace_private_a", headers=self.a_headers)
+            self.assertEqual(res_a.status_code, 200)
+            self.assertNotIn("_owner_id", res_a.json()["dossier"])
+            # User B is denied with 403
+            res_b = self.client.get("/api/v2/prove-it/trace_private_a", headers=self.b_headers)
+            self.assertEqual(res_b.status_code, 403)
+        finally:
+            PROVE_IT_REGISTRY.pop("trace_private_a", None)
+
+    def test_vision_lfi_blocked(self):
+        import asyncio
+        from core.registry import registry
+        from core.context import ExecutionContext
+        registry.load_all_features()
+        feat_35 = registry.get_feature("feat_35_vision_connector")
+        ctx = ExecutionContext(
+            trace_id="test-lfi-guard",
+            input_payload={"modality": "VISION", "text": "test", "image": "README.md"},
+        )
+        evolved = asyncio.run(feat_35.execute(ctx))
+        # Must NOT load local file from disk
+        self.assertNotIn("Loaded local specimen file", evolved.input_payload.get("text", ""))
+
+    def test_pools_leased_never_negative(self):
+        res = self.client.get("/api/v2/pools")
+        self.assertEqual(res.status_code, 200)
+        for prov, stats in res.json().get("providers", {}).items():
+            self.assertGreaterEqual(stats["leased"], 0, f"Provider {prov} has negative leased slots")
+            self.assertEqual(stats["max_slots"], 125)
+
 
 if __name__ == "__main__":
     unittest.main()

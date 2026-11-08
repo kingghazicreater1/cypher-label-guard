@@ -547,10 +547,14 @@ async def run_inference(
     try:
         final_context = await orchestrator.run_pipeline(ctx)
         
-        # Save Prove-It dossier to volatile memory before response
+        # Save Prove-It dossier to volatile memory before response (bounded to 500 entries)
         dossier = final_context.metadata.get("prove_it_dossier")
         if dossier:
-            PROVE_IT_REGISTRY[final_context.trace_id] = dossier
+            dossier_copy = dict(dossier)
+            dossier_copy["_owner_id"] = user.id if user else None
+            if len(PROVE_IT_REGISTRY) >= 500:
+                PROVE_IT_REGISTRY.pop(next(iter(PROVE_IT_REGISTRY)), None)
+            PROVE_IT_REGISTRY[final_context.trace_id] = dossier_copy
 
         unified_out = final_context.metadata.get("unified_output", {})
         grid = final_context.metadata.get("parliament_grid_4x8", [])
@@ -870,8 +874,10 @@ async def run_inference(
                     "REJECTED_ADVERSARIAL" if anomaly_guard == "ADVERSARIAL_INJECTION" else "REJECTED_ANOMALY"
                 )
 
-        # Update latest parliament state
+        # Update latest parliament state (bounded to 500 active tenant slots)
         _state_owner = user.id if user else "guest"
+        if len(LATEST_PARLIAMENT_STATE) >= 500 and _state_owner not in LATEST_PARLIAMENT_STATE:
+            LATEST_PARLIAMENT_STATE.pop(next(iter(LATEST_PARLIAMENT_STATE)), None)
         LATEST_PARLIAMENT_STATE[_state_owner] = {
             "trace_id": final_context.trace_id,
             "session_id": final_context.session_id,
@@ -888,18 +894,37 @@ async def run_inference(
 
         # Persist job metadata in database
         import json
-        job_num = str(int(time.time() * 10) % 900000 + 10000)
+        job_num = f"{int(time.time() * 1000) % 900000 + 100000}-{final_context.trace_id[:4]}"
 
         # Handle vision image & annotations persistence
         img_url = req.image_data or getattr(req, "image_url", None)
         is_vision = (req.modality == "VISION") or bool(img_url)
-        vis_boxes = final_context.ephemeral_store.get("visual_bounding_boxes") or []
+        vis_boxes = (
+            final_context.metadata.get("visual_bounding_boxes")
+            or final_context.ephemeral_store.get("visual_bounding_boxes")
+            or []
+        )
+
+        def _normalize_vis_box(b: Dict[str, Any]) -> Dict[str, int]:
+            raw_b = b.get("box")
+            norm_b = b.get("normalized_box")
+            if isinstance(raw_b, dict) and all(k in raw_b for k in ("x", "y", "w", "h")):
+                return raw_b
+            if isinstance(norm_b, (list, tuple)) and len(norm_b) == 4:
+                return {
+                    "x": max(0, min(95, int(round(float(norm_b[0]) * 100)))),
+                    "y": max(0, min(95, int(round(float(norm_b[1]) * 100)))),
+                    "w": max(5, min(100, int(round(float(norm_b[2]) * 100)))),
+                    "h": max(5, min(100, int(round(float(norm_b[3]) * 100)))),
+                }
+            return {"x": 10, "y": 10, "w": 50, "h": 50}
+
         annotations = [
             {
                 "label": b.get("label", "Detected Entity"),
                 "confidence": b.get("confidence", 95.0),
                 "color": "#10b981",
-                "box": b.get("box", {"x": 10, "y": 10, "w": 50, "h": 50}),
+                "box": _normalize_vis_box(b),
                 "description": b.get("description", "Concordant visual detection")
             }
             for b in vis_boxes
@@ -1247,15 +1272,16 @@ Respond ONLY with valid JSON:
                 "temperature": 0.0,
             }
             headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-                if r.status_code == 200:
-                    choice = r.json()["choices"][0]["message"]
-                    content = choice.get("content") or choice.get("reasoning") or ""
-                    clean = re.sub(r"^```json\s*", "", content.strip())
-                    clean = re.sub(r"\s*```$", "", clean)
-                    parsed = json.loads(clean)
-                    return {"success": True, "data": parsed}
+            from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
+            client = get_shared_client()
+            r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=10.0)
+            if r.status_code == 200:
+                choice = r.json()["choices"][0]["message"]
+                content = choice.get("content") or choice.get("reasoning") or ""
+                clean = re.sub(r"^```json\s*", "", content.strip())
+                clean = re.sub(r"\s*```$", "", clean)
+                parsed = json.loads(clean)
+                return {"success": True, "data": parsed}
         except Exception as e:
             logger.warning(f"Groq criteria clarify fallback: {e}")
 
@@ -1389,7 +1415,10 @@ Respond ONLY with valid JSON:
 
 
 @app.get("/api/v2/prove-it/{trace_id}")
-async def get_prove_it_dossier(trace_id: str):
+async def get_prove_it_dossier(
+    trace_id: str,
+    user: Optional[User] = Depends(get_optional_current_user),
+):
     """
     Feature 32: Prove It Button API.
     Returns complete transparent forensic breakdown of 32 votes, prompt hashes,
@@ -1397,10 +1426,20 @@ async def get_prove_it_dossier(trace_id: str):
     """
     if trace_id not in PROVE_IT_REGISTRY:
         raise HTTPException(status_code=404, detail=f"No forensic dossier found for Trace ID {trace_id}")
+    raw_dossier = PROVE_IT_REGISTRY[trace_id]
+    owner_id = raw_dossier.get("_owner_id") if isinstance(raw_dossier, dict) else None
+    if owner_id:
+        if user is None:
+            allow_guest = os.getenv("ALLOW_GUEST_INFERENCE", "").lower() in ("1", "true", "yes")
+            if not allow_guest:
+                raise HTTPException(status_code=401, detail="Authentication required to inspect this forensic dossier.")
+        elif user.id != owner_id and getattr(user, "role", "") not in ("Administrator", "admin"):
+            raise HTTPException(status_code=403, detail="Access denied: You do not own this forensic dossier.")
+    clean_dossier = {k: v for k, v in raw_dossier.items() if k != "_owner_id"} if isinstance(raw_dossier, dict) else raw_dossier
     return {
         "success": True,
         "trace_id": trace_id,
-        "dossier": PROVE_IT_REGISTRY[trace_id],
+        "dossier": clean_dossier,
     }
 
 
@@ -1414,6 +1453,12 @@ async def emergency_panic_flush(
     Immediately purges cryptographic salts, clears RAM scratchpads, and wipes volatile spools.
     """
     PROVE_IT_REGISTRY.clear()
+    LATEST_PARLIAMENT_STATE.clear()
+    try:
+        from features.cat_c_privacy.blind_masker import BlindIngressMasker
+        BlindIngressMasker._RAM_VAULTS.clear()
+    except Exception as _exc:
+        _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
     
     # Locate feat_21 and trigger purge
     feat_21 = registry.get_feature("feat_21_panic_salt_flush")
@@ -1433,14 +1478,15 @@ async def get_connection_pools():
     """Returns Feature 14 connection pool utilization (500 capacity)."""
     feat_14 = registry.get_feature("feat_14_connection_pool")
     if feat_14 and hasattr(feat_14, "semaphores"):
-        pool_status = {
-            k: {
+        pool_status = {}
+        for k, sem in feat_14.semaphores.items():
+            actual_cap = 150 if k == "groq" else (100 if k in ("openrouter", "openai") else 50)
+            active_leases = max(0, actual_cap - sem._value)
+            pool_status[k] = {
                 "max_slots": 125,
-                "available": sem._value,
-                "leased": 125 - sem._value,
+                "available": max(0, 125 - active_leases),
+                "leased": active_leases,
             }
-            for k, sem in feat_14.semaphores.items()
-        }
         if "anthropic" in pool_status and "claude" not in pool_status:
             pool_status["claude"] = pool_status["anthropic"]
         return {

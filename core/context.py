@@ -215,7 +215,7 @@ class ExecutionContext:
             session_id=self._session_id,
             tenant_id=self._tenant_id,
             trace_id=self._trace_id,
-            input_payload=input_payload if input_payload is not None else copy.deepcopy(self._input_payload),
+            input_payload=dict(input_payload) if input_payload is not None else dict(self._input_payload),
             depth_tier=depth_tier or self._depth_tier,
             votes=votes if votes is not None else list(self._votes),
             lineage_chain=lineage_chain if lineage_chain is not None else list(self._lineage_chain),
@@ -251,6 +251,27 @@ class ExecutionContext:
             latency_ms=latency_ms,
         )
         new_votes.append(record)
+        return self.evolve(votes=new_votes)
+
+    def with_votes(self, records: List[VoteRecord]) -> "ExecutionContext":
+        """
+        Appends a batch of parliament vote records in a single context evolution.
+        Eliminates O(N) intermediate context allocations during 32-seat voting.
+        """
+        if not records:
+            return self
+        new_votes = list(self._votes)
+        for v in records:
+            new_votes.append(
+                VoteRecord(
+                    api=v.api,
+                    dimension=v.dimension,
+                    vote=v.vote,
+                    confidence=max(0.0, min(1.0, v.confidence)),
+                    reasoning=v.reasoning,
+                    latency_ms=v.latency_ms,
+                )
+            )
         return self.evolve(votes=new_votes)
 
     def with_lineage_step(self, step_name: str, payload_data: Any) -> "ExecutionContext":

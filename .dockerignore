@@ -1,0 +1,23 @@
+# Ignore secrets, local databases, and build artifacts from Docker context
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.git/
+.github/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.output/
+frontend_backup_v1/
+frontend_backup_v2/
+scratch/
+*.log

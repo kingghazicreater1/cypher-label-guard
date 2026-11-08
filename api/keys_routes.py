@@ -4,6 +4,7 @@
 # ==============================================================================
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -58,7 +59,11 @@ def _mask_key(key: Optional[str]) -> str:
 
 
 def _save_to_dotenv(updates: Dict[str, str]):
-    """Persists updated keys and models into local .env file."""
+    """Persists updated keys and models into local .env file with newline sanitization."""
+    sanitized_updates = {
+        re.sub(r"[^A-Z0-9_]", "", k): str(v).replace("\r", "").replace("\n", "").replace("\x00", "").strip()
+        for k, v in updates.items()
+    }
     lines = []
     existing_keys = set()
     if ENV_FILE_PATH.exists():
@@ -67,13 +72,13 @@ def _save_to_dotenv(updates: Dict[str, str]):
                 stripped = line.strip()
                 if "=" in stripped and not stripped.startswith("#"):
                     k = stripped.split("=")[0].strip()
-                    if k in updates:
-                        lines.append(f"{k}={updates[k]}\n")
+                    if k in sanitized_updates:
+                        lines.append(f"{k}={sanitized_updates[k]}\n")
                         existing_keys.add(k)
                         continue
                 lines.append(line)
 
-    for k, v in updates.items():
+    for k, v in sanitized_updates.items():
         if k not in existing_keys:
             lines.append(f"{k}={v}\n")
 

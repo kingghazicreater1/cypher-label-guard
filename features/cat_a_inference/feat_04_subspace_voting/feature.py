@@ -964,17 +964,8 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         model_ballots = await asyncio.gather(*tasks)
         all_votes: List[VoteRecord] = [v for ballot in model_ballots for v in ballot]
 
-        # Append all 32 votes to the context
-        evolved_context = context
-        for v in all_votes:
-            evolved_context = evolved_context.with_vote(
-                api=v.api,
-                dimension=v.dimension,
-                vote=v.vote,
-                confidence=v.confidence,
-                reasoning=v.reasoning,
-                latency_ms=v.latency_ms,
-            )
+        # Append all 32 votes to the context in a single batch evolution
+        evolved_context = context.with_votes(all_votes)
 
         # ----------------------------------------------------------------------
         # TALLY AND CONSENSUS MECHANICS (The Heart of Rule 20 & Feature 4)

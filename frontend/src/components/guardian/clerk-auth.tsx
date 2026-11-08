@@ -12,6 +12,7 @@ import { KeyRound, Sparkles, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { registerClerkSession, unregisterClerkSession, refreshAuthToken } from '@/lib/auth-token';
+import { API_BASE_URL } from '@/lib/api';
 
 export function getClerkPublishableKey(): string {
   if (typeof window !== 'undefined') {
@@ -105,7 +106,7 @@ function ClerkActiveCard({ onSuccess }: ClerkGatekeeperCardProps) {
         return;
       }
       try {
-        const res = await fetch('/api/v2/auth/clerk-sync', {
+        const res = await fetch(`${API_BASE_URL}/api/v2/auth/clerk-sync`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });

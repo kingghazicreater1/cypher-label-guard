@@ -28,13 +28,16 @@ def get_folders(
     user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
-    """Returns all available folders from both FolderRecord and JobRecord."""
+    """Returns all available folders from both FolderRecord and JobRecord with tenant isolation."""
     rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
     job_folders = set()
     if user:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+        if getattr(user, "role", None) == "Administrator":
+            job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        else:
+            job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
     else:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id.is_(None)).distinct().all() if f[0]}
     all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
     return {"success": True, "folders": all_folders}
 
@@ -59,9 +62,12 @@ def create_folder(
     rec_folders = {f.name for f in db.query(FolderRecord).all() if f.name}
     job_folders = set()
     if user:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
+        if getattr(user, "role", None) == "Administrator":
+            job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        else:
+            job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id == user.id).distinct().all() if f[0]}
     else:
-        job_folders = {f[0] for f in db.query(JobRecord.folder_name).distinct().all() if f[0]}
+        job_folders = {f[0] for f in db.query(JobRecord.folder_name).filter(JobRecord.user_id.is_(None)).distinct().all() if f[0]}
     all_folders = sorted(list(rec_folders | job_folders | {"General Workspace"}))
     return {"success": True, "folder": clean_name, "folders": all_folders}
 
@@ -166,7 +172,10 @@ def export_jobs_batch(
     """
     query = db.query(JobRecord)
     if user:
-        query = query.filter(JobRecord.user_id == user.id)
+        if getattr(user, "role", None) != "Administrator":
+            query = query.filter(JobRecord.user_id == user.id)
+    else:
+        query = query.filter(JobRecord.user_id.is_(None))
 
     if job_ids:
         ids_list = [j.strip() for j in job_ids.split(",") if j.strip()]
@@ -301,8 +310,25 @@ def get_dashboard_analytics(
     from datetime import date, timedelta
     from sqlalchemy import func
 
+    # Scope base queries by tenant ownership
+    date_query = db.query(func.max(func.date(JobRecord.created_at)))
+    query = db.query(JobRecord)
+    prev_query = db.query(func.coalesce(func.sum(JobRecord.labels_count), 0))
+
+    if user:
+        if getattr(user, "role", None) != "Administrator":
+            tenant_cond = (JobRecord.user_id == user.id) | (JobRecord.user_id.is_(None))
+            date_query = date_query.filter(tenant_cond)
+            query = query.filter(tenant_cond)
+            prev_query = prev_query.filter(tenant_cond)
+    else:
+        guest_cond = JobRecord.user_id.is_(None)
+        date_query = date_query.filter(guest_cond)
+        query = query.filter(guest_cond)
+        prev_query = prev_query.filter(guest_cond)
+
     # Determine reference date (most recent job date or current date)
-    max_date = db.query(func.max(func.date(JobRecord.created_at))).scalar()
+    max_date = date_query.scalar()
     if max_date:
         try:
             ref_date = datetime.strptime(max_date, "%Y-%m-%d").date()
@@ -311,9 +337,6 @@ def get_dashboard_analytics(
     else:
         ref_date = datetime.now(timezone.utc).date()
 
-    query = db.query(JobRecord)
-    if user and getattr(user, "role", None) != "Administrator":
-        query = query.filter((JobRecord.user_id == user.id) | (JobRecord.user_id.is_(None)))
     if folder and folder != "All":
         query = query.filter(JobRecord.folder_name == folder)
 
@@ -341,9 +364,6 @@ def get_dashboard_analytics(
     )
 
     # Previous period labels count
-    prev_query = db.query(func.coalesce(func.sum(JobRecord.labels_count), 0))
-    if user and getattr(user, "role", None) != "Administrator":
-        prev_query = prev_query.filter((JobRecord.user_id == user.id) | (JobRecord.user_id.is_(None)))
     if folder and folder != "All":
         prev_query = prev_query.filter(JobRecord.folder_name == folder)
     prev_labels = (
