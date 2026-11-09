@@ -148,19 +148,19 @@ export const pageHead = (title: string, description: string) => ({ meta: [{ titl
 
 export function isLegacyStaticAnnotation(annotations?: ImageAnnotation[]): boolean {
   if (!annotations || annotations.length === 0) return true;
+  const hasLegacyDemoLabels = annotations.every(
+    (a) =>
+      a.label.includes('Visual Subject: Detected') ||
+      a.label.includes('Surface Inspection: Passed') ||
+      a.label.includes('Feature Recognition: Concordant')
+  );
   const isDefault1 = annotations.some(
     (a) => a.box && a.box.x === 18 && a.box.y === 15 && a.box.w === 64 && a.box.h === 70
   );
   const isDefault2 = annotations.some(
     (a) => a.box && a.box.x === 15 && a.box.y === 15 && a.box.w === 70 && a.box.h === 70
   );
-  const isDefault3 = annotations.every(
-    (a) =>
-      a.label.includes('Visual Subject: Detected') ||
-      a.label.includes('Surface Inspection: Passed') ||
-      a.label.includes('Feature Recognition: Concordant')
-  );
-  return isDefault1 || isDefault2 || isDefault3;
+  return hasLegacyDemoLabels && (isDefault1 || isDefault2);
 }
 
 export function resolveHeadingBoundingBoxes(

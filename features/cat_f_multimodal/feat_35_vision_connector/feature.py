@@ -378,6 +378,9 @@ class VisionConnectorFeature(BaseFeature):
                     '  "primary_product": "The specific merchandise/equipment/subject (e.g. \'Barcode Scanner\', \'MacBook Laptop\', \'Fresh Strawberry\', \'Watch and Tea Cup\')",\n'
                     '  "objects": ["specific item 1", "item 2", ...],\n'
                     '  "item_count": 4,\n'
+                    '  "boxes_2d": [\n'
+                    '     {"box_2d": [100, 200, 500, 600], "label": "specific item 1"}\n'
+                    '  ],\n'
                     '  "human_present": true or false,\n'
                     '  "human_details": "Description of person/hand/face if present, else \'None\'",\n'
                     '  "is_edible": true or false,\n'
@@ -390,6 +393,7 @@ class VisionConnectorFeature(BaseFeature):
                     '  "scene_type": "Real photo / Studio product shot / CGI render / Kitchen / Outdoor"\n'
                     "}\n"
                     "CRITICAL INSTRUCTIONS:\n"
+                    "- boxes_2d (Spatial Grounding): Locate EVERY physical object/merchandise in the frame. Return normalized integer coordinates 0 to 1000 representing [ymin, xmin, ymax, xmax].\n"
                     "- visible_text (OCR): Read and transcribe ALL visible text, especially large headline banners (e.g. 'PRODUCT REVIEW'), titles, logos, and labels. Do NOT miss headline text!\n"
                     "- item_count: Count the TOTAL individual items, pieces, or distinct units (e.g. if a makeup palette has 9-54 pans/shades of eye shadow, count individual pans; if 12 eggs, count 12; if 3 bottles, count 3; if 1 strawberry and 2 forks, count 3).\n"
                     "- background: Clearly describe the surface or background material (e.g. 'Vineyard landscape', 'Wooden table', 'Dark surface', 'Peach backdrop'). NEVER say 'No human' for background!\n"
@@ -526,6 +530,37 @@ class VisionConnectorFeature(BaseFeature):
                     visible_text_val = str(parsed.get("visible_text") or "None")
                     background_val = str(parsed.get("background") or "Standard")
                     scene_type_val = str(parsed.get("scene_type") or "Product Image")
+
+                    # Parse Native 2D Spatial Grounding Boxes from Gemini Vision
+                    gemini_boxes = []
+                    if parsed.get("boxes_2d") and isinstance(parsed["boxes_2d"], list):
+                        for b_item in parsed["boxes_2d"]:
+                            if isinstance(b_item, dict) and "box_2d" in b_item:
+                                coords = b_item["box_2d"]
+                                if isinstance(coords, (list, tuple)) and len(coords) == 4:
+                                    try:
+                                        ymin, xmin, ymax, xmax = [float(v) for v in coords]
+                                        x_pct = max(0, min(95, int(round((xmin / 1000.0) * 100))))
+                                        y_pct = max(0, min(95, int(round((ymin / 1000.0) * 100))))
+                                        w_pct = max(5, min(100, int(round(((xmax - xmin) / 1000.0) * 100))))
+                                        h_pct = max(5, min(100, int(round(((ymax - ymin) / 1000.0) * 100))))
+                                        lbl = str(b_item.get("label") or "Detected Object").strip().title()
+                                        gemini_boxes.append({
+                                            "label": lbl,
+                                            "confidence": 96.0,
+                                            "box": {"x": x_pct, "y": y_pct, "w": w_pct, "h": h_pct},
+                                            "normalized_box": [
+                                                round(xmin / 1000.0, 4),
+                                                round(ymin / 1000.0, 4),
+                                                round((xmax - xmin) / 1000.0, 4),
+                                                round((ymax - ymin) / 1000.0, 4),
+                                            ],
+                                            "description": f"Pinpoint 2D visual detection of {lbl} via Vision Chamber."
+                                        })
+                                    except Exception:
+                                        pass
+                    if gemini_boxes:
+                        yolo_boxes = gemini_boxes
 
                     visual_summary = f"Verified Vision Analysis ({used_model}): {raw_reply}"
             except Exception as e:

@@ -352,7 +352,9 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
         trace_id: result.prove_it_trace_id,
         imageUrl: finalImageUrl,
         imageAnnotations: isImageJob
-          ? ((imageAnnotations && !isLegacyStaticAnnotation(imageAnnotations))
+          ? (((result as any).annotations && (result as any).annotations.length > 0 && !isLegacyStaticAnnotation((result as any).annotations))
+              ? (result as any).annotations
+              : (imageAnnotations && !isLegacyStaticAnnotation(imageAnnotations))
               ? imageAnnotations
               : resolveHeadingBoundingBoxes(critResults || effectiveCriteria, hasAnom))
           : undefined,
@@ -372,13 +374,17 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
         ? resolveHeadingBoundingBoxes(critResults || effectiveCriteria, hasAnom)
         : undefined;
 
+      const apiAnn = (result as any).annotations || (result as any).data?.annotations;
+
       setJobs((items) =>
         items.map((j) =>
           j.id === realJobId || (j as any).job_number === realJobId
             ? {
                 ...j,
                 imageUrl: imageUrl || j.imageUrl,
-                imageAnnotations: (imageAnnotations && !isLegacyStaticAnnotation(imageAnnotations))
+                imageAnnotations: (apiAnn && apiAnn.length > 0 && !isLegacyStaticAnnotation(apiAnn))
+                  ? apiAnn
+                  : (imageAnnotations && !isLegacyStaticAnnotation(imageAnnotations))
                   ? imageAnnotations
                   : (j.imageAnnotations && !isLegacyStaticAnnotation(j.imageAnnotations))
                   ? j.imageAnnotations

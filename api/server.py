@@ -819,25 +819,36 @@ async def run_inference(
                 is_container_signature = bool(matched_sig)
 
                 # 2. Filename verbatim or stem fragment echo (e.g., "#22", "22", "WIN_20261017...")
+                # Protects against cheating shortcuts, but preserves legitimate common product descriptions
+                COMMON_SAFE_VOCAB = {
+                    "laptop", "phone", "smartphone", "apple", "fruit", "shoe", "shoes", "sneaker",
+                    "sneakers", "watch", "car", "bottle", "cup", "coffee", "mug", "cookie", "cookies",
+                    "camera", "lens", "bag", "book", "chair", "table", "keyboard", "mouse", "screen",
+                    "display", "headphone", "headphones", "clothing", "apparel", "food", "produce"
+                }
                 is_filename_echo = False
                 matched_fn_token = ""
+                has_numeric_or_code = bool(re.search(r"\d|#|img_|dsc_|vid_|win_|frame_|specimen_", clean_stem))
                 if clean_stem and len(clean_stem) >= 2:
                     if val_norm == clean_stem or val_norm == raw_filename.lower():
+                        # Verbatim mirror of filename with no added semantic analysis
                         is_filename_echo = True
                         matched_fn_token = clean_stem
-                    elif len(clean_stem) > 3 and clean_stem in val_norm:
+                    elif has_numeric_or_code and (clean_stem in val_norm or re.search(rf"\b#?{re.escape(clean_stem)}\b", val_norm)):
+                        # Leaking camera/hash/tracking code into the output
                         is_filename_echo = True
                         matched_fn_token = clean_stem
-                    elif re.search(rf"\b#?{re.escape(clean_stem)}\b", val_norm):
+                    elif clean_stem not in COMMON_SAFE_VOCAB and len(clean_stem) > 4 and re.search(rf"\b{re.escape(clean_stem)}\b", val_norm) and not any(w in clean_stem for w in COMMON_SAFE_VOCAB):
                         is_filename_echo = True
                         matched_fn_token = clean_stem
 
                 # 3. Workspace / Studio branding reflection (e.g. borrowing folder name or studio branding without inspecting content)
                 is_workspace_echo = False
                 matched_ws_token = ""
-                if folder_name and folder_name != "general workspace" and len(folder_name) >= 3 and folder_name in val_norm:
-                    is_workspace_echo = True
-                    matched_ws_token = folder_name
+                if folder_name and folder_name != "general workspace" and len(folder_name) >= 3:
+                    if val_norm == folder_name and folder_name not in COMMON_SAFE_VOCAB:
+                        is_workspace_echo = True
+                        matched_ws_token = folder_name
                 elif "factory precision assembly" in val_norm and (is_filename_echo or "22" in val_norm):
                     is_workspace_echo = True
                     matched_ws_token = "Factory Precision Assembly"
@@ -1045,6 +1056,9 @@ async def run_inference(
                     "description": f"Spatial multi-focus anchor for heading '{h_name}' verified by Vision Chamber."
                 })
 
+        if annotations and isinstance(unified_out, dict):
+            unified_out["annotations"] = annotations
+
         job_title = req.text[:80] if req.text else f"Analysis Job #{job_num}"
 
         db_sess = None
@@ -1166,6 +1180,7 @@ async def run_inference(
             "job_id": job_num,
             "job_number": job_num,
             "data": unified_out,
+            "annotations": annotations,
             "summary": final_context.to_summary_dict(),
             "parliament_grid": grid,
             "prove_it_trace_id": final_context.trace_id,

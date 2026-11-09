@@ -166,16 +166,23 @@ class BlindIngressMasker:
                 return True, "TOKEN_ECHO", match.group(0)
 
         # Check 2: Raw Vault Reflection (Even if prompt was masked, did model hallucinate real string?)
+        COMMON_SAFE_VOCAB = {
+            "laptop", "phone", "smartphone", "apple", "fruit", "shoe", "shoes", "sneaker",
+            "sneakers", "watch", "car", "bottle", "cup", "coffee", "mug", "cookie", "cookies",
+            "camera", "lens", "bag", "book", "chair", "table", "keyboard", "mouse", "screen",
+            "display", "headphone", "headphones", "clothing", "apparel", "food", "produce"
+        }
         vault = cls._RAM_VAULTS.get(trace_id)
         if vault:
             for raw_str in vault.get("raw_strings", []):
                 raw_norm = raw_str.strip().lower()
+                has_code = bool(re.search(r"\d|#|img_|dsc_|vid_|win_|frame_|specimen_", raw_norm))
                 if len(raw_norm) >= 2:
-                    if val_norm.lower() == raw_norm:
+                    if val_norm.lower() == raw_norm and raw_norm not in COMMON_SAFE_VOCAB:
                         return True, "FILENAME_ECHO", raw_str
-                    if len(raw_norm) > 3 and raw_norm in val_norm.lower():
+                    if has_code and (raw_norm in val_norm.lower() or re.search(rf"\b#?{re.escape(raw_norm)}\b", val_norm.lower())):
                         return True, "FILENAME_ECHO", raw_str
-                    if re.search(rf"\b#?{re.escape(raw_norm)}\b", val_norm.lower()):
+                    if raw_norm not in COMMON_SAFE_VOCAB and len(raw_norm) > 4 and re.search(rf"\b{re.escape(raw_norm)}\b", val_norm.lower()) and not any(w in raw_norm for w in COMMON_SAFE_VOCAB):
                         return True, "FILENAME_ECHO", raw_str
 
         return False, "", ""
