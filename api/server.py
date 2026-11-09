@@ -236,6 +236,7 @@ async def get_feature_registry():
 @app.post("/api/v2/infer")
 async def run_inference(
     req: InferenceRequest,
+    request: Request,
     user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
@@ -243,6 +244,8 @@ async def run_inference(
     Executes all 38 features across Categories A-F, runs the 32-vote parliament,
     and returns the Unified Multi-Modal JSON output.
     """
+    from api.rate_limiter import check_rate_limit, infer_limiter
+    check_rate_limit(request, infer_limiter, user_id=user.id if user else None)
 
     # Production Auth Enforcement: Require login unless running in automated test suite
     allow_guest = os.getenv("ALLOW_GUEST_INFERENCE", "false").lower() in ("true", "1")
@@ -1069,6 +1072,8 @@ async def run_inference(
                 eff_votes = consensus_data.get("affirmative_votes", 0)
 
             owner_user = billed_user  # never attribute a job to an arbitrary user
+            # Enforce true Zero-Retention: never persist raw base64 raster streams into database storage
+            clean_image_url = img_url if (img_url and not img_url.startswith("data:image/") and len(img_url) < 500) else None
             new_job = JobRecord(
                 user_id=owner_user.id if owner_user else None,
                 job_number=job_num,
@@ -1083,7 +1088,7 @@ async def run_inference(
                 affirmative_votes=eff_votes,
                 trace_id=final_context.trace_id,
                 lineage_hash=final_context.metadata.get("final_lineage_hash", ""),
-                image_url=img_url,
+                image_url=clean_image_url,
                 criteria_json=json.dumps(crit_results) if crit_results else None,
                 annotations_json=json.dumps(annotations) if annotations else None,
             )

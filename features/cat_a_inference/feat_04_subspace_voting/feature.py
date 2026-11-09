@@ -978,8 +978,9 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         if category_votes:
             most_common_cat, highest_freq = Counter(category_votes).most_common(1)[0]
             concordance_score = (highest_freq / len(category_votes))
-            # Affirmative votes are normalized against the full 4-seat parliamentary chamber
-            effective_affirmative_votes = int(round((highest_freq / 4.0) * 32))
+            # Affirmative votes are normalized against active voting seats (minimum 3 required for quorum)
+            active_seats = max(len(category_votes), 3)
+            effective_affirmative_votes = int(round((highest_freq / float(active_seats)) * 32))
         else:
             most_common_cat = "UNCONFIGURED"
             concordance_score = 0.0

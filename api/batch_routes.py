@@ -304,11 +304,14 @@ async def _execute_batch_job(
 @router.post("/start")
 async def start_batch_processing(
     req: BatchStartRequest,
+    request: Request,
     user: User = Depends(get_current_user),
 ):
     """
     Initializes a multi-model background batch run over up to 1,000+ CSV items.
     """
+    from api.rate_limiter import check_rate_limit, batch_limiter
+    check_rate_limit(request, batch_limiter, user_id=user.id if user else None)
     try:
         reader = csv.DictReader(io.StringIO(req.csv_text.strip()))
         rows = list(reader)

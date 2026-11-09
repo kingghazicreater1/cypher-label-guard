@@ -179,7 +179,7 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
                     affirmative_votes=it.get("affirmative_votes", 32 if it.get("decision") == "CONFIRMED" else 0),
                     trace_id=it.get("trace_id"),
                     lineage_hash=it.get("lineage_hash", ""),
-                    image_url=it["image_data"],
+                    image_url=None,  # Zero-Retention: Do not persist raw raster data in database
                     criteria_json=json.dumps(it.get("criteria_results")),
                 ))
             db.add(AuditLogEntry(
@@ -204,9 +204,12 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
 @router.post("/start")
 async def start_image_batch(
     req: ImageBatchRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from api.rate_limiter import check_rate_limit, batch_limiter
+    check_rate_limit(request, batch_limiter, user_id=user.id if user else None)
     raw_images = req.images or []
     if not raw_images:
         raise HTTPException(status_code=400, detail="Please upload at least 1 image for the batch.")

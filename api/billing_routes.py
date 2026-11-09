@@ -8,7 +8,7 @@ import uuid
 import stripe
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from db.database import get_db
@@ -540,3 +540,202 @@ def grant_credits_admin(
         "message": f"Successfully granted {req.credit_amount:,} credits to {target_user.email}.",
         "new_balance": target_user.credits_balance,
     }
+
+
+# ------------------------------------------------------------------------------
+# Pakistan-First Dual-Track Billing (SadaPay / Raast / Bank IBAN & Lemon Squeezy)
+# ------------------------------------------------------------------------------
+
+class ManualPaymentRequest(BaseModel):
+    credit_amount: int = Field(..., gt=0, description="1000, 5000, 10000, or 25000")
+    payment_channel: str = Field(..., description="SadaPay, Raast, Bank Transfer, or Nayapay")
+    transaction_reference: str = Field(..., min_length=4, max_length=100, description="Transaction ID (TID) / Ref Number")
+    sender_name: Optional[str] = Field(default=None, max_length=100)
+    amount_paid_pkr: Optional[float] = Field(default=None, ge=0)
+
+
+class ApproveManualPaymentRequest(BaseModel):
+    transaction_id: str
+
+
+@router.get("/bank-details")
+def get_bank_transfer_details():
+    """Returns official Pakistani bank / SadaPay deposit details for wire transfer payments."""
+    return {
+        "success": True,
+        "channels": {
+            "sadapay": {
+                "account_title": os.getenv("SADAPAY_ACCOUNT_TITLE", "CypherLabelGuard Treasury"),
+                "number": os.getenv("SADAPAY_NUMBER", "03XX-XXXXXXX"),
+                "currency": "PKR",
+            },
+            "raast": {
+                "account_title": os.getenv("RAAST_ACCOUNT_TITLE", "CypherLabelGuard Treasury"),
+                "raast_id": os.getenv("RAAST_ID", "03XX-XXXXXXX"),
+                "currency": "PKR",
+            },
+            "bank_transfer": {
+                "bank_name": os.getenv("BANK_NAME", "Meezan Bank / HBL"),
+                "account_title": os.getenv("BANK_ACCOUNT_TITLE", "CypherLabelGuard"),
+                "account_number": os.getenv("BANK_ACCOUNT_NUMBER", "XXXXXXXXXXXXXX"),
+                "iban": os.getenv("BANK_IBAN", "PKXXXXXXXXXXXXXXXXXXXXXX"),
+                "currency": "PKR",
+            },
+        },
+        "credit_rates_pkr": {
+            1000: 2800,   # $10 @ 280 PKR/USD
+            5000: 12600,  # $45
+            10000: 22400, # $80
+            25000: 49000, # $175
+        },
+    }
+
+
+@router.post("/manual-payment-request")
+def submit_manual_payment(
+    req: ManualPaymentRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Submits a SadaPay / Raast / Bank wire transfer for administrator confirmation."""
+    credit_packs = {1000: 10.0, 5000: 45.0, 10000: 80.0, 25000: 175.0}
+    usd_val = credit_packs.get(req.credit_amount, req.credit_amount * 0.01)
+
+    inv_num = f"TID-{uuid.uuid4().hex[:6].upper()}"
+    desc = (
+        f"Manual Transfer via {req.payment_channel} (Ref: {req.transaction_reference.strip()}) "
+        f"for {req.credit_amount:,} Credits"
+    )
+    if req.sender_name:
+        desc += f" by {req.sender_name.strip()}"
+
+    tx = Transaction(
+        user_id=user.id,
+        invoice_number=inv_num,
+        description=desc,
+        amount=usd_val,
+        currency="USD",
+        status="PendingApproval",
+    )
+    db.add(tx)
+
+    log = AuditLogEntry(
+        user_id=user.id,
+        action="MANUAL_PAYMENT_SUBMITTED",
+        details=f"Submitted {req.payment_channel} transfer (Ref: {req.transaction_reference}) for {req.credit_amount:,} credits.",
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(tx)
+
+    return {
+        "success": True,
+        "message": f"Payment reference submitted successfully! Once verified, {req.credit_amount:,} credits will be allocated.",
+        "transaction": tx.to_dict(),
+    }
+
+
+@router.post("/manual-payment/approve")
+def approve_manual_payment(
+    req: ApproveManualPaymentRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin endpoint to verify and allocate credits from a submitted manual payment."""
+    tx = db.query(Transaction).filter(Transaction.id == req.transaction_id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+    if tx.status == "Paid":
+        raise HTTPException(status_code=400, detail="Transaction is already approved and paid.")
+
+    # Parse credit amount from description
+    import re
+    match = re.search(r"for\s+([0-9,]+)\s+Credits", tx.description)
+    credits_to_grant = int(match.group(1).replace(",", "")) if match else int(tx.amount * 100)
+
+    target_user = db.query(User).filter(User.id == tx.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+
+    target_user.credits_balance += credits_to_grant
+    tx.status = "Paid"
+
+    log = AuditLogEntry(
+        user_id=target_user.id,
+        action="MANUAL_PAYMENT_APPROVED",
+        details=f"Admin {admin.email} approved manual transaction {tx.invoice_number}. Allocated {credits_to_grant:,} credits.",
+    )
+    db.add(log)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Approved transaction {tx.invoice_number}. {credits_to_grant:,} credits granted to {target_user.email}.",
+        "new_balance": target_user.credits_balance,
+        "transaction": tx.to_dict(),
+    }
+
+
+@router.post("/webhook/lemonsqueezy")
+async def lemonsqueezy_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Lemon Squeezy Merchant of Record (MoR) automated webhook.
+    Receives order_created events, validates HMAC-SHA256 signature, and grants credits.
+    """
+    secret = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
+    body_bytes = await request.body()
+
+    if secret:
+        import hmac
+        import hashlib
+        signature = request.headers.get("X-Signature", "")
+        digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(digest, signature):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+
+    try:
+        import json
+        payload = json.loads(body_bytes.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    event_name = payload.get("meta", {}).get("event_name", "")
+    if event_name in ("order_created", "subscription_payment_success"):
+        custom_data = payload.get("meta", {}).get("custom_data", {})
+        user_id = custom_data.get("user_id")
+        user_email = payload.get("data", {}).get("attributes", {}).get("user_email")
+
+        # Resolve user
+        user = None
+        if user_id:
+            user = db.query(User).filter(User.id == str(user_id)).first()
+        if not user and user_email:
+            user = db.query(User).filter(User.email == str(user_email).strip().lower()).first()
+
+        if user:
+            total_cents = payload.get("data", {}).get("attributes", {}).get("total", 0)
+            credits_to_add = int(custom_data.get("credits", total_cents))  # 1 cent = 1 credit default
+            user.credits_balance += credits_to_add
+
+            order_id = str(payload.get("data", {}).get("id", uuid.uuid4().hex[:6]))
+            tx = Transaction(
+                user_id=user.id,
+                invoice_number=f"LS-{order_id}",
+                description=f"Lemon Squeezy Order #{order_id} ({credits_to_add:,} Credits)",
+                amount=round(total_cents / 100.0, 2),
+                currency="USD",
+                status="Paid",
+            )
+            db.add(tx)
+            db.add(AuditLogEntry(
+                user_id=user.id,
+                action="LEMONSQUEEZY_ORDER_CREDITED",
+                details=f"Credited {credits_to_add:,} tokens via Lemon Squeezy Order #{order_id}.",
+            ))
+            db.commit()
+
+    return {"success": True}
+
