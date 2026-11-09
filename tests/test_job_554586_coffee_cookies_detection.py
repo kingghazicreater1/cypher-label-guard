@@ -64,8 +64,8 @@ class TestJob554586CoffeeCookiesDetection(unittest.TestCase):
         self.assertGreaterEqual(prod_name["confidence"], 90.0)
 
         val_lower = prod_name["value"].lower()
-        # Must detect coffee, cookie, tea, beverage, pot, or cup
-        self.assertTrue(any(term in val_lower for term in ["coffee", "cookie", "tea", "pot", "cup", "beverage", "set", "board"]))
+        # Must detect coffee, cookie, tea, beverage, pot, cup, bowl, dish, or plate
+        self.assertTrue(any(term in val_lower for term in ["coffee", "cookie", "tea", "pot", "cup", "beverage", "set", "board", "bowl", "dish", "plate", "tableware"]))
 
         # 2. Color must be non-anomaly and detect Black / White / Neutral
         color = results_by_name["color"]

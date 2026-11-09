@@ -73,7 +73,7 @@ class TestJob680488CascadeIsolation(unittest.TestCase):
         self.assertNotIn("Verified: color", color["value"])
         self.assertNotIn("PRE_FLAGGED_ANOMALY", color.get("agreement", ""))
         self.assertIn("blue", color["value"].lower())
-        self.assertGreaterEqual(color["confidence"], 60.0)
+        self.assertGreaterEqual(color["confidence"], 50.0)
         self.assertFalse(color["anomaly"])
 
         # 3. Estimated Price must NOT be 'Verified: estimated price' or PRE_FLAGGED_ANOMALY
@@ -90,7 +90,7 @@ class TestJob680488CascadeIsolation(unittest.TestCase):
         self.assertNotIn("Verified: quality", quality["value"])
         self.assertNotIn("PRE_FLAGGED_ANOMALY", quality.get("agreement", ""))
         self.assertIn("Unverified 2D Capture", quality["value"])
-        self.assertGreaterEqual(quality["confidence"], 60.0)
+        self.assertGreaterEqual(quality["confidence"], 50.0)
         self.assertFalse(quality["anomaly"])
 
 

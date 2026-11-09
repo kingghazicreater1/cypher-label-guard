@@ -1414,12 +1414,28 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                 total_voters = len(crit_votes)
                 from core.fallback_registry import FallbackRegistry
 
-                # Separate substantive (non-fallback, non-unverified) values
+                # Separate substantive (non-fallback, non-unverified, non-tautological echo) values
+                def _is_invalid_or_echo(val_item: Any, c_name: str) -> bool:
+                    if val_item is None:
+                        return True
+                    s = str(val_item).strip()
+                    if not s:
+                        return True
+                    s_low = s.lower()
+                    c_low = c_name.strip().lower()
+                    if s_low == c_low:
+                        return True
+                    if s_low in ["product name", "item name", "field value", "unspecified", "unknown", "n/a", "none"]:
+                        return True
+                    if FallbackRegistry.is_fallback(s)[0]:
+                        return True
+                    if s.startswith("[UNVERIFIED") or "[unverified" in s_low or s.startswith("[REJECTED"):
+                        return True
+                    return False
+
                 substantive_values = [
                     v for v in values
-                    if v and not FallbackRegistry.is_fallback(str(v))[0]
-                    and not str(v).startswith("[UNVERIFIED")
-                    and "[unverified" not in str(v).lower()
+                    if not _is_invalid_or_echo(v, name)
                 ]
 
                 # If substantive values exist alongside unverified refusals, substantive values take precedence

@@ -340,67 +340,110 @@ class VisionConnectorFeature(BaseFeature):
             f"Geometric bounds verified, zero digital corruption."
         )
 
-        # 4. Real Multimodal Vision API (OpenRouter Gemini 2.5 Flash / OpenAI GPT-4o-mini)
+        # 4. Real Multimodal Vision API (Gemini Direct / OpenRouter / OpenAI)
+        gemini_key = os.getenv("GEMINI_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
         primary_product_name = None
         item_colors_desc = None
 
-        vision_url = None
-        vision_headers = None
-        vision_model = None
-
-        if openrouter_key and (img_data or raw_image_bytes):
-            vision_url = "https://openrouter.ai/api/v1/chat/completions"
-            vision_headers = {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"}
-            vision_model = "google/gemini-2.5-flash"
-        elif openai_key and (img_data or raw_image_bytes):
-            vision_url = "https://api.openai.com/v1/chat/completions"
-            vision_headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
-            vision_model = "gpt-4o-mini"
-
-        if vision_url:
+        if (img_data or raw_image_bytes) and (gemini_key or openrouter_key or openai_key):
             try:
                 import httpx
                 import json
+                from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
+                client = get_shared_client()
 
                 # Format image URL or base64 data URI
-                if isinstance(img_data, str) and (img_data.startswith("http") or img_data.startswith("data:image/")):
+                raw_b64_str = None
+                img_mime = "image/jpeg"
+                if isinstance(img_data, str) and img_data.startswith("data:image/"):
+                    raw_b64_str = img_data.split(",", 1)[1] if "," in img_data else img_data
+                    mime_match = re.match(r"data:(image/[^;]+);base64,", img_data)
+                    if mime_match:
+                        img_mime = mime_match.group(1)
                     img_url_to_send = img_data
                 elif raw_image_bytes:
-                    b64_str = base64.b64encode(raw_image_bytes).decode("utf-8")
-                    img_url_to_send = f"data:image/jpeg;base64,{b64_str}"
+                    raw_b64_str = base64.b64encode(raw_image_bytes).decode("utf-8")
+                    img_url_to_send = f"data:image/jpeg;base64,{raw_b64_str}"
+                elif isinstance(img_data, str) and img_data.startswith("http"):
+                    img_url_to_send = img_data
                 else:
                     img_url_to_send = None
 
-                if img_url_to_send:
-                    v_prompt = (
-                        "Analyze this image carefully. Identify all physical items, entities, and attributes.\n"
-                        "Return strictly valid JSON with these exact keys:\n"
-                        "{\n"
-                        '  "primary_product": "The specific merchandise/equipment/subject (e.g. \'Barcode Scanner\', \'MacBook Laptop\', \'Fresh Strawberry\', \'Watch and Tea Cup\')",\n'
-                        '  "objects": ["specific item 1", "item 2", ...],\n'
-                        '  "item_count": 4,\n'
-                        '  "human_present": true or false,\n'
-                        '  "human_details": "Description of person/hand/face if present, else \'None\'",\n'
-                        '  "is_edible": true or false,\n'
-                        '  "is_living": true or false,\n'
-                        '  "brand_or_logo": "Visible brand name or \'Unbranded\'",\n'
-                        '  "visible_text": "Complete transcribed text/numbers anywhere in the frame (e.g. \'PRODUCT REVIEW\', bottle labels, currency text, knife inscriptions), or \'None\'",\n'
-                        '  "damage_or_defect": "Description of any cracks, scratches, flaws, or \'None / Pristine\'",\n'
-                        '  "item_colors": "item 1 (colors), item 2 (colors)",\n'
-                        '  "background": "Description of background or surface (e.g. \'Vineyard landscape\', \'Wooden table\', \'Dark surface\', \'Peach studio backdrop\')",\n'
-                        '  "scene_type": "Real photo / Studio product shot / CGI render / Kitchen / Outdoor"\n'
-                        "}\n"
-                        "CRITICAL INSTRUCTIONS:\n"
-                        "- visible_text (OCR): Read and transcribe ALL visible text, especially large headline banners (e.g. 'PRODUCT REVIEW'), titles, logos, and labels. Do NOT miss headline text!\n"
-                        "- item_count: Count the TOTAL individual items, pieces, or distinct units (e.g. if a makeup palette has 9-54 pans/shades of eye shadow, count individual pans; if 12 eggs, count 12; if 3 bottles, count 3; if 1 strawberry and 2 forks, count 3).\n"
-                        "- background: Clearly describe the surface or background material (e.g. 'Vineyard landscape', 'Wooden table', 'Dark surface', 'Peach backdrop'). NEVER say 'No human' for background!\n"
-                        "- human_present: true ONLY if an actual real living human person (or real human hands/face/body) is present. Return false for toy figurines, Lego minifigures, statues, dolls, mannequins, cartoon characters, drawings, or illustrations! (e.g. A Lego minifigure is a toy, NOT human presence).\n"
-                        "- is_living: true ONLY if the primary main object/specimen itself is a living organism (e.g. human person, live animal, fresh blooming flower/rose, live potted plant, or fresh botanical produce on the vine/stem). Return false for all manufactured products, electronics (laptop, camera, scanner), fashion accessories (shoes, watches, bags), cosmetics (perfume, lipstick), tools (knives), books, or prepared food (croissants, desserts, panna cotta, cheese), even if hands are holding it or decorative flowers/fruit are in the background!"
-                    )
-                    v_payload = {
-                        "model": vision_model,
+                v_prompt = (
+                    "Analyze this image carefully. Identify all physical items, entities, and attributes.\n"
+                    "Return strictly valid JSON with these exact keys:\n"
+                    "{\n"
+                    '  "primary_product": "The specific merchandise/equipment/subject (e.g. \'Barcode Scanner\', \'MacBook Laptop\', \'Fresh Strawberry\', \'Watch and Tea Cup\')",\n'
+                    '  "objects": ["specific item 1", "item 2", ...],\n'
+                    '  "item_count": 4,\n'
+                    '  "human_present": true or false,\n'
+                    '  "human_details": "Description of person/hand/face if present, else \'None\'",\n'
+                    '  "is_edible": true or false,\n'
+                    '  "is_living": true or false,\n'
+                    '  "brand_or_logo": "Visible brand name or \'Unbranded\'",\n'
+                    '  "visible_text": "Complete transcribed text/numbers anywhere in the frame (e.g. \'PRODUCT REVIEW\', bottle labels, currency text, knife inscriptions), or \'None\'",\n'
+                    '  "damage_or_defect": "Description of any cracks, scratches, flaws, or \'None / Pristine\'",\n'
+                    '  "item_colors": "item 1 (colors), item 2 (colors)",\n'
+                    '  "background": "Description of background or surface (e.g. \'Vineyard landscape\', \'Wooden table\', \'Dark surface\', \'Peach studio backdrop\')",\n'
+                    '  "scene_type": "Real photo / Studio product shot / CGI render / Kitchen / Outdoor"\n'
+                    "}\n"
+                    "CRITICAL INSTRUCTIONS:\n"
+                    "- visible_text (OCR): Read and transcribe ALL visible text, especially large headline banners (e.g. 'PRODUCT REVIEW'), titles, logos, and labels. Do NOT miss headline text!\n"
+                    "- item_count: Count the TOTAL individual items, pieces, or distinct units (e.g. if a makeup palette has 9-54 pans/shades of eye shadow, count individual pans; if 12 eggs, count 12; if 3 bottles, count 3; if 1 strawberry and 2 forks, count 3).\n"
+                    "- background: Clearly describe the surface or background material (e.g. 'Vineyard landscape', 'Wooden table', 'Dark surface', 'Peach backdrop'). NEVER say 'No human' for background!\n"
+                    "- human_present: true ONLY if an actual real living human person (or real human hands/face/body) is present. Return false for toy figurines, Lego minifigures, statues, dolls, mannequins, cartoon characters, drawings, or illustrations! (e.g. A Lego minifigure is a toy, NOT human presence).\n"
+                    "- is_living: true ONLY if the primary main object/specimen itself is a living organism (e.g. human person, live animal, fresh blooming flower/rose, live potted plant, or fresh botanical produce on the vine/stem). Return false for all manufactured products, electronics (laptop, camera, scanner), fashion accessories (shoes, watches, bags), cosmetics (perfume, lipstick), tools (knives), books, or prepared food (croissants, desserts, panna cotta, cheese), even if hands are holding it or decorative flowers/fruit are in the background!"
+                )
+
+                parsed = None
+                raw_reply = ""
+                used_model = "vision"
+
+                # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable)
+                if gemini_key and raw_b64_str:
+                    try:
+                        g_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent"
+                        g_headers = {"x-goog-api-key": gemini_key, "Content-Type": "application/json"}
+                        g_payload = {
+                            "contents": [
+                                {
+                                    "parts": [
+                                        {"text": v_prompt},
+                                        {"inline_data": {"mime_type": img_mime, "data": raw_b64_str}},
+                                    ]
+                                }
+                            ],
+                            "generationConfig": {"temperature": 0.0},
+                        }
+                        g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=20.0)
+                        if g_resp.status_code == 200:
+                            g_data = g_resp.json()
+                            raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            clean_json = raw_reply
+                            if "```json" in clean_json:
+                                clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                            elif "```" in clean_json:
+                                clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                            parsed = json.loads(clean_json)
+                            used_model = "gemini-flash-lite"
+                    except Exception as g_err:
+                        _log.debug("Gemini vision query failed, trying secondary: %s", g_err)
+
+                # 2. Secondary: OpenRouter or OpenAI
+                if not parsed and (openrouter_key or openai_key) and img_url_to_send:
+                    if openrouter_key:
+                        sec_url = "https://openrouter.ai/api/v1/chat/completions"
+                        sec_headers = {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"}
+                        sec_model = "google/gemini-2.0-flash-exp:free"
+                    else:
+                        sec_url = "https://api.openai.com/v1/chat/completions"
+                        sec_headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
+                        sec_model = "gpt-4o-mini"
+
+                    sec_payload = {
+                        "model": sec_model,
                         "messages": [
                             {
                                 "role": "user",
@@ -412,66 +455,79 @@ class VisionConnectorFeature(BaseFeature):
                         ],
                         "max_tokens": 800,
                     }
-                    from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
-                    client = get_shared_client()
-                    resp = await client.post(vision_url, headers=vision_headers, json=v_payload, timeout=25.0)
-                    if resp.status_code == 200:
-                        v_data = resp.json()
-                        raw_reply = v_data["choices"][0]["message"]["content"].strip()
-                        clean_json = raw_reply
-                        if "```json" in clean_json:
-                            clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
-                        elif "```" in clean_json:
-                            clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
-                        parsed = json.loads(clean_json)
-                        ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
-                        if parsed.get("objects"):
-                            api_objects = parsed["objects"]
-                            non_abstract_api = [o for o in api_objects if o.strip().lower() not in ABSTRACT_SHAPES]
-                            if non_abstract_api:
-                                detected_objects = api_objects
-                            else:
-                                non_abstract_cv2 = [o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES]
-                                if non_abstract_cv2:
-                                    detected_objects = non_abstract_cv2
-                                else:
-                                    detected_objects = api_objects
-                        if parsed.get("primary_product"):
-                            p_cand = parsed["primary_product"]
-                            # Sanitize action phrases like "warehouse inventory scanning" -> "Barcode Scanner"
-                            if any(act in p_cand.lower() for act in ["scanning", "inventory scanning", "warehouse scanning", "operation"]):
-                                scanner_tool = next((o for o in detected_objects if "scanner" in o.lower()), None)
-                                if scanner_tool:
-                                    p_cand = f"Industrial {scanner_tool.title()}"
-                                elif detected_objects:
-                                    p_cand = detected_objects[0].title()
-                            if p_cand.strip().lower() not in ABSTRACT_SHAPES:
-                                primary_product_name = p_cand
-                            elif detected_objects and any(o.strip().lower() not in ABSTRACT_SHAPES for o in detected_objects):
-                                primary_product_name = ", ".join(o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES)
-                            else:
-                                primary_product_name = p_cand
-                        if parsed.get("item_colors"):
-                            item_colors_desc = parsed["item_colors"]
-                        if parsed.get("item_count") is not None:
-                            try:
-                                item_count_val = int(parsed["item_count"])
-                            except (ValueError, TypeError):
-                                item_count_val = len(detected_objects) if detected_objects else 1
-                        else:
-                            item_count_val = len(detected_objects) if detected_objects else 1
-                        
-                        human_present_val = bool(parsed.get("human_present"))
-                        human_details_val = str(parsed.get("human_details") or "None")
-                        is_edible_val = bool(parsed.get("is_edible"))
-                        is_living_val = bool(parsed.get("is_living"))
-                        damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")
-                        brand_val = str(parsed.get("brand_or_logo") or "Unbranded")
-                        visible_text_val = str(parsed.get("visible_text") or "None")
-                        background_val = str(parsed.get("background") or "Standard")
-                        scene_type_val = str(parsed.get("scene_type") or "Product Image")
+                    try:
+                        sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=25.0)
+                        if sec_resp.status_code == 200:
+                            sec_data = sec_resp.json()
+                            raw_reply = sec_data["choices"][0]["message"]["content"].strip()
+                            clean_json = raw_reply
+                            if "```json" in clean_json:
+                                clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                            elif "```" in clean_json:
+                                clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                            parsed = json.loads(clean_json)
+                            used_model = sec_model
+                    except Exception as sec_err:
+                        _log.debug("Secondary vision query failed: %s", sec_err)
 
-                        visual_summary = f"Verified Vision Analysis ({vision_model}): {raw_reply}"
+                if parsed and isinstance(parsed, dict):
+                    ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
+                    if parsed.get("objects"):
+                        raw_objs = parsed["objects"]
+                        norm_objs = []
+                        for o in raw_objs:
+                            if isinstance(o, dict):
+                                lbl = o.get("label") or o.get("name") or o.get("object")
+                                if lbl:
+                                    norm_objs.append(str(lbl))
+                            elif isinstance(o, str) and o.strip():
+                                norm_objs.append(o.strip())
+                        api_objects = norm_objs if norm_objs else [str(x) for x in raw_objs]
+                        non_abstract_api = [o for o in api_objects if o.strip().lower() not in ABSTRACT_SHAPES]
+                        if non_abstract_api:
+                            detected_objects = api_objects
+                        else:
+                            non_abstract_cv2 = [o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES]
+                            if non_abstract_cv2:
+                                detected_objects = non_abstract_cv2
+                            else:
+                                detected_objects = api_objects
+                    if parsed.get("primary_product"):
+                        p_cand = parsed["primary_product"]
+                        # Sanitize action phrases like "warehouse inventory scanning" -> "Barcode Scanner"
+                        if any(act in p_cand.lower() for act in ["scanning", "inventory scanning", "warehouse scanning", "operation"]):
+                            scanner_tool = next((o for o in detected_objects if "scanner" in o.lower()), None)
+                            if scanner_tool:
+                                p_cand = f"Industrial {scanner_tool.title()}"
+                            elif detected_objects:
+                                p_cand = detected_objects[0].title()
+                        if p_cand.strip().lower() not in ABSTRACT_SHAPES:
+                            primary_product_name = p_cand
+                        elif detected_objects and any(o.strip().lower() not in ABSTRACT_SHAPES for o in detected_objects):
+                            primary_product_name = ", ".join(o for o in detected_objects if o.strip().lower() not in ABSTRACT_SHAPES)
+                        else:
+                            primary_product_name = p_cand
+                    if parsed.get("item_colors"):
+                        item_colors_desc = parsed["item_colors"]
+                    if parsed.get("item_count") is not None:
+                        try:
+                            item_count_val = int(parsed["item_count"])
+                        except (ValueError, TypeError):
+                            item_count_val = len(detected_objects) if detected_objects else 1
+                    else:
+                        item_count_val = len(detected_objects) if detected_objects else 1
+                    
+                    human_present_val = bool(parsed.get("human_present"))
+                    human_details_val = str(parsed.get("human_details") or "None")
+                    is_edible_val = bool(parsed.get("is_edible"))
+                    is_living_val = bool(parsed.get("is_living"))
+                    damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")
+                    brand_val = str(parsed.get("brand_or_logo") or "Unbranded")
+                    visible_text_val = str(parsed.get("visible_text") or "None")
+                    background_val = str(parsed.get("background") or "Standard")
+                    scene_type_val = str(parsed.get("scene_type") or "Product Image")
+
+                    visual_summary = f"Verified Vision Analysis ({used_model}): {raw_reply}"
             except Exception as e:
                 pass  # Graceful fallback to zero-retention local analyzer
 
