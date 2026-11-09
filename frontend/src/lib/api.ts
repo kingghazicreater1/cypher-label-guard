@@ -508,6 +508,114 @@ export async function getInvoices(): Promise<InvoiceItem[]> {
   return data.invoices || [];
 }
 
+// ----------------------------------------------------------------------------
+// Pakistani Banking (SadaPay / Raast / Direct IBFT) APIs
+// ----------------------------------------------------------------------------
+export interface PakistaniAccount {
+  method: string;
+  title: string;
+  account_title: string;
+  iban?: string;
+  account_number?: string;
+  raast_id?: string;
+  bank_name?: string;
+  badge: string;
+  instructions: string;
+}
+
+export interface PricingPackage {
+  plan_name: string;
+  pkr: number;
+  usd: number;
+  credits: number;
+  desc: string;
+}
+
+export interface PaymentProofItem {
+  id: string;
+  user_id: string;
+  user_email: string;
+  plan_name: string;
+  amount_pkr: number;
+  amount_usd: number;
+  credits: number;
+  payment_method: string;
+  transaction_ref: string;
+  sender_name?: string;
+  sender_account?: string;
+  notes?: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  admin_notes?: string;
+  created_at: string;
+  reviewed_at?: string;
+}
+
+export async function getPakistanAccounts(): Promise<{ accounts: PakistaniAccount[]; packages: PricingPackage[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/pakistan-accounts`);
+  if (!res.ok) throw new Error("Failed to load banking accounts");
+  return res.json();
+}
+
+export async function submitPaymentProof(data: {
+  plan_name: string;
+  amount_pkr: number;
+  credits: number;
+  payment_method: string;
+  transaction_ref: string;
+  sender_name?: string;
+  sender_account?: string;
+  notes?: string;
+}): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/submit-proof`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || "Failed to submit payment proof");
+  return body;
+}
+
+export async function getMyPaymentRequests(): Promise<PaymentProofItem[]> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/my-requests`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to load payment requests");
+  const data = await res.json();
+  return data.requests || [];
+}
+
+export async function getAdminPaymentRequests(): Promise<PaymentProofItem[]> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/requests`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to load admin payment requests");
+  const data = await res.json();
+  return data.requests || [];
+}
+
+export async function approvePaymentRequest(requestId: string, adminNotes?: string): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/approve/${requestId}`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ admin_notes: adminNotes }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || "Failed to approve payment");
+  return body;
+}
+
+export async function rejectPaymentRequest(requestId: string, adminNotes?: string): Promise<any> {
+  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/reject/${requestId}`, {
+    method: "POST",
+    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ admin_notes: adminNotes }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.detail || "Failed to reject payment");
+  return body;
+}
+
 export interface DashboardAnalyticsResponse {
   success: boolean;
   period: string;

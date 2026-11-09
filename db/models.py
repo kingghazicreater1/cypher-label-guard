@@ -254,3 +254,47 @@ class FolderRecord(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
+
+class PaymentRequest(Base):
+    """Manual Payment Proofs for Pakistani Banking (SadaPay, Raast, Direct IBFT, Lemon Squeezy)."""
+    __tablename__ = "payment_requests"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    plan_name = Column(String(50), nullable=False)  # e.g. Basic, Master, Max, Team or Custom Credits
+    amount_pkr = Column(Float, nullable=False)  # In PKR
+    amount_usd = Column(Float, nullable=False)  # In USD equivalent
+    credits = Column(Integer, nullable=False)
+    payment_method = Column(String(50), nullable=False)  # "SADAPAY", "RAAST", "BANK_TRANSFER", "NAYAPAY"
+    transaction_ref = Column(String(100), nullable=False)  # Transaction ID / Ref
+    sender_name = Column(String(100), nullable=True)  # Sender's Account Title
+    sender_account = Column(String(100), nullable=True)  # Sender Phone / IBAN / Account
+    notes = Column(Text, nullable=True)
+    status = Column(String(50), nullable=False, default="PENDING")  # PENDING, APPROVED, REJECTED
+    admin_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    reviewed_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", backref="payment_requests")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "user_email": self.user.email if self.user else "Unknown",
+            "plan_name": self.plan_name,
+            "amount_pkr": self.amount_pkr,
+            "amount_usd": self.amount_usd,
+            "credits": self.credits,
+            "payment_method": self.payment_method,
+            "transaction_ref": self.transaction_ref,
+            "sender_name": self.sender_name,
+            "sender_account": self.sender_account,
+            "notes": self.notes,
+            "status": self.status,
+            "admin_notes": self.admin_notes,
+            "created_at": self.created_at.strftime("%b %d, %Y %I:%M %p") if self.created_at else None,
+            "reviewed_at": self.reviewed_at.strftime("%b %d, %Y %I:%M %p") if self.reviewed_at else None,
+        }
+
+

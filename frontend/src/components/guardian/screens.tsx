@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/compone
 import { toast } from 'sonner';
 import { useGuardian } from './context';
 import { providers, privacyMethods, featureGroups, exportFile } from './data';
-import { addCreditCard, deleteCreditCard, setDefaultCreditCard, changeSubscriptionPlan, purchaseTokenCredits, getInvoices, getAuditLogs, getKeysStatus, updateKeys, testProviderKey, getKeySlots, updateKeySlot, testKeySlot, getCommanderRates, updateCommanderRates, getDashboardAnalytics, type DashboardAnalyticsResponse, type InvoiceItem, type KeysStatusResponse, type KeySlotInfo, type CommanderRates } from '@/lib/api';
+import { addCreditCard, deleteCreditCard, setDefaultCreditCard, changeSubscriptionPlan, purchaseTokenCredits, getInvoices, getAuditLogs, getKeysStatus, updateKeys, testProviderKey, getKeySlots, updateKeySlot, testKeySlot, getCommanderRates, updateCommanderRates, getDashboardAnalytics, getCurrentUserProfile, getPakistanAccounts, submitPaymentProof, getMyPaymentRequests, getAdminPaymentRequests, approvePaymentRequest, rejectPaymentRequest, type DashboardAnalyticsResponse, type InvoiceItem, type KeysStatusResponse, type KeySlotInfo, type CommanderRates, type PakistaniAccount, type PricingPackage, type PaymentProofItem } from '@/lib/api';
 import { PageHeading, Panel, Status, TabBar, DataIcon, Kpi, Progress, ParliamentOrbit, PeriodControl } from './common';
 import { ThroughputChart, CostChart } from './charts';
 export function LabelsScreen() {
@@ -1909,6 +1909,133 @@ export function TenantsScreen() {
 
   const { billingSummary, cards, refreshBilling } = useGuardian();
 
+  // Pakistani Banking State (SadaPay, Raast, IBFT)
+  const [pakAccounts, setPakAccounts] = useState<PakistaniAccount[]>([]);
+  const [pakPackages, setPakPackages] = useState<PricingPackage[]>([]);
+  const [myProofs, setMyProofs] = useState<PaymentProofItem[]>([]);
+  const [adminProofs, setAdminProofs] = useState<PaymentProofItem[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [selectedPlanName, setSelectedPlanName] = useState('Master');
+  const [amountPkr, setAmountPkr] = useState(13500);
+  const [creditsCount, setCreditsCount] = useState(7500);
+  const [payMethod, setPayMethod] = useState('SADAPAY');
+  const [txRef, setTxRef] = useState('');
+  const [senderName, setSenderName] = useState('');
+  const [senderAccount, setSenderAccount] = useState('');
+  const [proofNotes, setProofNotes] = useState('');
+  const [isSubmittingProof, setIsSubmittingProof] = useState(false);
+  const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPakistanAccounts().then(res => {
+      if (res && res.accounts) setPakAccounts(res.accounts);
+      if (res && res.packages) {
+        setPakPackages(res.packages);
+        const initial = res.packages.find(p => p.plan_name === 'Master') || res.packages[0];
+        if (initial) {
+          setSelectedPlanName(initial.plan_name);
+          setAmountPkr(initial.pkr);
+          setCreditsCount(initial.credits);
+        }
+      }
+    }).catch(() => {});
+
+    getCurrentUserProfile().then(res => {
+      if (res?.user?.role === 'Administrator') {
+        setIsAdmin(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const loadProofs = async () => {
+    try {
+      const my = await getMyPaymentRequests();
+      setMyProofs(my);
+    } catch (_) {}
+    try {
+      const all = await getAdminPaymentRequests();
+      setAdminProofs(all);
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    if (tab === 'SadaPay & Raast (PKR)') {
+      loadProofs();
+    }
+  }, [tab, isAdmin]);
+
+  const handleSelectPackage = (pkg: PricingPackage) => {
+    setSelectedPlanName(pkg.plan_name);
+    setAmountPkr(pkg.pkr);
+    setCreditsCount(pkg.credits);
+  };
+
+  const handleSubmitProof = async () => {
+    const token = getStoredToken();
+    if (!token) {
+      toast.error('Authentication Required: Please sign in before submitting payment proofs.');
+      return;
+    }
+    if (!txRef || txRef.trim().length < 4) {
+      toast.error('Please enter the Transaction ID / Reference Number provided by your banking app.');
+      return;
+    }
+    setIsSubmittingProof(true);
+    try {
+      await submitPaymentProof({
+        plan_name: selectedPlanName,
+        amount_pkr: Number(amountPkr),
+        credits: Number(creditsCount),
+        payment_method: payMethod,
+        transaction_ref: txRef.trim(),
+        sender_name: senderName.trim() || undefined,
+        sender_account: senderAccount.trim() || undefined,
+        notes: proofNotes.trim() || undefined,
+      });
+      toast.success('Payment proof submitted successfully! Credits will be allocated immediately upon verification.');
+      setTxRef('');
+      setSenderAccount('');
+      setProofNotes('');
+      await loadProofs();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to submit payment proof.');
+    } finally {
+      setIsSubmittingProof(false);
+    }
+  };
+
+  const handleApproveProof = async (proofId: string) => {
+    setActionInProgress(proofId);
+    try {
+      await approvePaymentRequest(proofId, 'Verified via mobile banking / statement.');
+      toast.success('Payment approved! Credits added to user account.');
+      await loadProofs();
+      await refreshBilling();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to approve payment.');
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const handleRejectProof = async (proofId: string) => {
+    setActionInProgress(proofId);
+    try {
+      await rejectPaymentRequest(proofId, 'Transaction reference could not be verified.');
+      toast.info('Payment proof marked as Rejected.');
+      await loadProofs();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to reject payment.');
+    } finally {
+      setActionInProgress(null);
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label} copied to clipboard!`);
+  };
+
   // Load invoices on mount or tab change
   useEffect(() => {
     getInvoices().then(setInvoices).catch(() => {});
@@ -2098,10 +2225,22 @@ export function TenantsScreen() {
           </div>
         }
       />
-      <TabBar tabs={['Billing', 'Credit Cards', 'Token Wallet', 'Tenant list', 'Invoices']} active={tab} onChange={setTab} />
+      <TabBar tabs={['Billing', 'SadaPay & Raast (PKR)', 'Credit Cards', 'Token Wallet', 'Tenant list', 'Invoices']} active={tab} onChange={setTab} />
 
       {tab === 'Billing' ? (
         <div className="space-y-6">
+          <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🇵🇰</span>
+              <div>
+                <p className="text-xs font-semibold text-emerald-400">Pakistani Bank & SadaPay / Raast Direct Payments</p>
+                <p className="text-[11px] text-muted-foreground">Pay in PKR via SadaPay, Raast, or IBFT without Stripe credit cards. Instant manual verification.</p>
+              </div>
+            </div>
+            <Button size="sm" variant="outline" className="text-xs h-7 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/20" onClick={() => setTab('SadaPay & Raast (PKR)')}>
+              Pay in PKR &rarr;
+            </Button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Panel title="Active Subscription" icon={<Building2 />}>
               <div className="panel-body">
@@ -2220,6 +2359,338 @@ export function TenantsScreen() {
               ))}
             </div>
           </Panel>
+        </div>
+      ) : tab === 'SadaPay & Raast (PKR)' ? (
+        <div className="space-y-6">
+          {/* Header Card */}
+          <Panel title="Pakistani Direct Banking Channels (SadaPay, Raast, IBFT)" icon={<Wallet />}>
+            <div className="panel-body space-y-4">
+              <p className="text-xs text-muted-foreground">
+                Transfer funds directly in Pakistani Rupee (PKR) without international debit/credit cards or Stripe barriers. 
+                Choose your preferred channel below, send payment, and submit your Transaction Reference ID. 
+                Our compliance audit desk verifies proofs and allocates your token credits instantly.
+              </p>
+
+              {/* Account Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                {pakAccounts.map(acc => (
+                  <div key={acc.method} className="p-4 rounded-lg border border-border/60 bg-background/60 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-bold text-xs uppercase px-2 py-0.5 rounded bg-primary/20 text-primary">
+                          {acc.method}
+                        </span>
+                        <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 px-2 py-0.5 rounded">
+                          {acc.badge}
+                        </span>
+                      </div>
+                      <h4 className="text-sm font-semibold mb-1">{acc.title}</h4>
+                      <p className="text-xs text-muted-foreground mb-3">{acc.instructions}</p>
+
+                      <div className="space-y-1.5 text-xs font-mono bg-secondary/30 p-2.5 rounded border border-border/40 mb-3">
+                        <div>
+                          <span className="text-muted-foreground text-[10px] block">ACCOUNT TITLE</span>
+                          <span className="font-semibold text-foreground">{acc.account_title}</span>
+                        </div>
+                        {acc.iban && (
+                          <div className="pt-1">
+                            <span className="text-muted-foreground text-[10px] block">IBAN</span>
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-primary break-all">{acc.iban}</span>
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={() => copyToClipboard(acc.iban!, 'IBAN')}>
+                                Copy
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        {acc.account_number && (
+                          <div className="pt-1">
+                            <span className="text-muted-foreground text-[10px] block">ACCOUNT / PHONE</span>
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-foreground">{acc.account_number}</span>
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={() => copyToClipboard(acc.account_number!, 'Account')}>
+                                Copy
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        {acc.raast_id && (
+                          <div className="pt-1">
+                            <span className="text-muted-foreground text-[10px] block">RAAST ID</span>
+                            <div className="flex items-center justify-between">
+                              <span className="font-semibold text-emerald-400">{acc.raast_id}</span>
+                              <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" onClick={() => copyToClipboard(acc.raast_id!, 'Raast ID')}>
+                                Copy
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Panel>
+
+          {/* Package Selection & Proof Submission Form */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Panel title="Step 1: Select Plan / Credits Package" icon={<Building2 />}>
+              <div className="panel-body space-y-3">
+                <p className="text-xs text-muted-foreground">Select package to calculate exact PKR transfer amount:</p>
+                <div className="grid grid-cols-1 gap-2">
+                  {pakPackages.map(pkg => {
+                    const isSelected = selectedPlanName === pkg.plan_name;
+                    return (
+                      <div
+                        key={pkg.plan_name}
+                        onClick={() => handleSelectPackage(pkg)}
+                        className={`p-3 rounded border cursor-pointer transition-all flex items-center justify-between ${
+                          isSelected ? 'border-primary bg-primary/10 shadow-sm' : 'border-border/50 bg-background/40 hover:bg-background/80'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <strong className="text-sm">{pkg.plan_name}</strong>
+                            <span className="text-[10px] font-mono text-primary px-1.5 py-0.5 rounded bg-primary/20">
+                              {pkg.credits.toLocaleString()} credits
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">{pkg.desc}</p>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-base font-mono font-bold text-foreground">
+                            PKR {pkg.pkr.toLocaleString()}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground block font-mono">
+                            ~${pkg.usd} USD
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Step 2: Submit Transfer Reference / Proof" icon={<FileCheck2 />}>
+              <div className="panel-body space-y-4">
+                <div className="p-3 rounded bg-secondary/20 border border-border/40 text-xs flex justify-between items-center">
+                  <div>
+                    <span className="text-muted-foreground block text-[10px]">SELECTED PACKAGE</span>
+                    <strong className="text-sm text-primary">{selectedPlanName}</strong> ({creditsCount.toLocaleString()} credits)
+                  </div>
+                  <div className="text-right">
+                    <span className="text-muted-foreground block text-[10px]">PAYABLE AMOUNT</span>
+                    <strong className="text-base font-mono text-foreground">PKR {amountPkr.toLocaleString()}</strong>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold block mb-1">Transfer Channel Used *</label>
+                    <select
+                      value={payMethod}
+                      onChange={e => setPayMethod(e.target.value)}
+                      className="w-full text-xs p-2 rounded bg-background border border-border"
+                    >
+                      <option value="SADAPAY">SadaPay (Mobile Number / IBAN)</option>
+                      <option value="RAAST">Raast Instant P2P (SBP)</option>
+                      <option value="BANK_TRANSFER">Meezan Bank / Commercial Bank IBFT</option>
+                      <option value="NAYAPAY">Nayapay Transfer</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold block mb-1">Transaction ID / Reference Number *</label>
+                    <input
+                      value={txRef}
+                      onChange={e => setTxRef(e.target.value)}
+                      placeholder="e.g. SP-49019284 or 12-digit Raast Ref"
+                      className="w-full text-xs p-2 rounded bg-background border border-border font-mono"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-0.5">Found on your bank transfer confirmation screen or SMS.</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs font-semibold block mb-1">Sender Account Title</label>
+                      <input
+                        value={senderName}
+                        onChange={e => setSenderName(e.target.value)}
+                        placeholder="e.g. Ali Khan"
+                        className="w-full text-xs p-2 rounded bg-background border border-border"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold block mb-1">Sender Mobile / Account</label>
+                      <input
+                        value={senderAccount}
+                        onChange={e => setSenderAccount(e.target.value)}
+                        placeholder="e.g. 0300-1234567"
+                        className="w-full text-xs p-2 rounded bg-background border border-border font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold block mb-1">Additional Notes / Remarks</label>
+                    <input
+                      value={proofNotes}
+                      onChange={e => setProofNotes(e.target.value)}
+                      placeholder="Optional remarks or branch info"
+                      className="w-full text-xs p-2 rounded bg-background border border-border"
+                    />
+                  </div>
+
+                  <Button
+                    className="w-full text-xs font-semibold"
+                    disabled={isSubmittingProof || !txRef.trim()}
+                    onClick={handleSubmitProof}
+                  >
+                    {isSubmittingProof ? 'Submitting Proof...' : 'Submit Payment Proof for Verification'}
+                  </Button>
+                </div>
+              </div>
+            </Panel>
+          </div>
+
+          {/* User's Submitted Proofs */}
+          <Panel title="My Submitted Payment Proofs" icon={<FileText />}>
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Channel</th>
+                    <th>Package / Credits</th>
+                    <th>Amount (PKR)</th>
+                    <th>Transaction Reference</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {myProofs.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center text-xs text-muted-foreground py-6">
+                        No payment proofs submitted yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    myProofs.map(proof => (
+                      <tr key={proof.id}>
+                        <td className="text-xs">{proof.created_at || 'Just now'}</td>
+                        <td>
+                          <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                            {proof.payment_method}
+                          </span>
+                        </td>
+                        <td>
+                          <strong className="text-xs">{proof.plan_name}</strong>
+                          <span className="text-[10px] text-muted-foreground block font-mono">
+                            +{proof.credits.toLocaleString()} credits
+                          </span>
+                        </td>
+                        <td className="font-mono text-xs font-bold">
+                          PKR {proof.amount_pkr.toLocaleString()}
+                        </td>
+                        <td className="font-mono text-xs text-foreground font-semibold">
+                          {proof.transaction_ref}
+                        </td>
+                        <td>
+                          <span className={`status text-[11px] px-2 py-0.5 rounded ${
+                            proof.status === 'APPROVED' ? 'Confirmed' : proof.status === 'REJECTED' ? 'Rejected' : 'Stalemate'
+                          }`}>
+                            {proof.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          {/* Administrator Verification Desk */}
+          {isAdmin && (
+            <Panel title="Administrator Verification & Credit Desk (Privileged)" icon={<ShieldCheck />}>
+              <div className="table-scroll">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Date</th>
+                      <th>Method</th>
+                      <th>Plan</th>
+                      <th>PKR</th>
+                      <th>Credits</th>
+                      <th>Ref ID</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminProofs.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center text-xs text-muted-foreground py-6">
+                          No pending requests in queue.
+                        </td>
+                      </tr>
+                    ) : (
+                      adminProofs.map(proof => (
+                        <tr key={proof.id}>
+                          <td className="text-xs font-mono">{proof.user_email}</td>
+                          <td className="text-[11px]">{proof.created_at}</td>
+                          <td>
+                            <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/20 text-primary">
+                              {proof.payment_method}
+                            </span>
+                          </td>
+                          <td className="text-xs font-bold">{proof.plan_name}</td>
+                          <td className="font-mono text-xs font-bold">PKR {proof.amount_pkr.toLocaleString()}</td>
+                          <td className="font-mono text-xs text-emerald-400">+{proof.credits.toLocaleString()}</td>
+                          <td className="font-mono text-xs font-bold text-foreground">{proof.transaction_ref}</td>
+                          <td>
+                            <span className={`status text-[10px] px-1.5 py-0.5 rounded ${
+                              proof.status === 'APPROVED' ? 'Confirmed' : proof.status === 'REJECTED' ? 'Rejected' : 'Stalemate'
+                            }`}>
+                              {proof.status}
+                            </span>
+                          </td>
+                          <td>
+                            {proof.status === 'PENDING' ? (
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white"
+                                  disabled={actionInProgress === proof.id}
+                                  onClick={() => handleApproveProof(proof.id)}
+                                >
+                                  Approve & Credit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-6 text-[10px]"
+                                  disabled={actionInProgress === proof.id}
+                                  onClick={() => handleRejectProof(proof.id)}
+                                >
+                                  Reject
+                                </Button>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground">{proof.status}</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          )}
         </div>
       ) : tab === 'Credit Cards' ? (
         <Panel title="Saved Credit Cards (PCI-DSS Tokenized)" icon={<CardIcon />} action={<Button size="sm" onClick={() => setAddCardModal(true)}><Plus size={13}/>Add Card</Button>}>

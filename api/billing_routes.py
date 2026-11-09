@@ -11,8 +11,8 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from db.database import get_db
-from db.models import User, PaymentMethod, Subscription, Transaction, AuditLogEntry
+from db.database import get_db, init_db
+from db.models import User, PaymentMethod, Subscription, Transaction, AuditLogEntry, PaymentRequest
 from api.auth_routes import get_current_user, get_optional_current_user, require_admin
 from typing import Optional
 
@@ -738,4 +738,252 @@ async def lemonsqueezy_webhook(
             db.commit()
 
     return {"success": True}
+
+
+# ==============================================================================
+# PAKISTANI BANKING & SADAPAY / RAAST PROOF VERIFICATION ENGINE
+# ==============================================================================
+
+class SubmitProofRequest(BaseModel):
+    plan_name: str = Field(..., description="Basic, Master, Max, Team or Custom Credits")
+    amount_pkr: float = Field(..., gt=0, description="Amount transferred in PKR")
+    credits: int = Field(..., gt=0, description="Requested credits amount")
+    payment_method: str = Field("SADAPAY", description="SADAPAY, RAAST, BANK_TRANSFER, or NAYAPAY")
+    transaction_ref: str = Field(..., min_length=4, description="Transaction ID or Reference number")
+    sender_name: Optional[str] = None
+    sender_account: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReviewProofRequest(BaseModel):
+    admin_notes: Optional[str] = None
+
+
+@router.get("/pakistan-accounts")
+def get_pakistan_accounts():
+    """Returns official Pakistani banking & Raast channels and current pricing packages."""
+    return {
+        "success": True,
+        "accounts": [
+            {
+                "method": "SADAPAY",
+                "title": "SadaPay Direct Transfer",
+                "account_title": os.getenv("SADAPAY_TITLE", "AV GUARDIAN ENTERPRISE"),
+                "iban": os.getenv("SADAPAY_IBAN", "PK36SADA0000001234567890"),
+                "account_number": os.getenv("SADAPAY_NUMBER", "0300-1234567"),
+                "badge": "0% Fee · Instant 24/7",
+                "instructions": "Send to SadaPay via mobile number or IBAN. Submit transaction ID below.",
+            },
+            {
+                "method": "RAAST",
+                "title": "State Bank of Pakistan (Raast Instant P2P)",
+                "account_title": os.getenv("RAAST_TITLE", "AV GUARDIAN ENTERPRISE"),
+                "raast_id": os.getenv("RAAST_ID", "03001234567"),
+                "badge": "Instant SBP Settlement",
+                "instructions": "Transfer via Raast ID from any Pakistani mobile banking app with zero transaction charges.",
+            },
+            {
+                "method": "BANK_TRANSFER",
+                "title": "Commercial Bank IBFT (Meezan / HBL / Alfalah)",
+                "account_title": os.getenv("BANK_TITLE", "AV GUARDIAN ENTERPRISE"),
+                "bank_name": os.getenv("BANK_NAME", "Meezan Bank Ltd"),
+                "iban": os.getenv("BANK_IBAN", "PK00MEZN0000000000000000"),
+                "badge": "Inter-Bank Funds Transfer",
+                "instructions": "Standard IBFT transfer. Enter the 6 to 12 digit banking reference number.",
+            },
+        ],
+        "packages": [
+            {"plan_name": "Basic", "pkr": 5200, "usd": 19, "credits": 2500, "desc": "Standard 4-Model Parliament SLA"},
+            {"plan_name": "Master", "pkr": 13500, "usd": 49, "credits": 7500, "desc": "Priority Pool & Deep Vision Inspection"},
+            {"plan_name": "Max", "pkr": 27000, "usd": 99, "credits": 20000, "desc": "500 Managed Connections & SHA-256 Proofs"},
+            {"plan_name": "Team", "pkr": 135000, "usd": 499, "credits": 120000, "desc": "Dedicated VIP Chamber & Unlimited Seats"},
+            {"plan_name": "Starter Pack (5,000 Credits)", "pkr": 2800, "usd": 10, "credits": 5000, "desc": "5,000 On-Demand Token Credits"},
+            {"plan_name": "Growth Pack (20,000 Credits)", "pkr": 11000, "usd": 40, "credits": 20000, "desc": "20,000 High-Volume Token Credits"},
+        ],
+    }
+
+
+@router.post("/submit-proof")
+def submit_payment_proof(
+    req: SubmitProofRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Submit proof of manual payment via SadaPay, Raast, or Pakistani bank transfer."""
+    init_db()
+    existing = db.query(PaymentRequest).filter(
+        PaymentRequest.transaction_ref == req.transaction_ref.strip()
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A payment proof with reference '{req.transaction_ref}' has already been submitted (Status: {existing.status})."
+        )
+
+    amount_usd = round(req.amount_pkr / 280.0, 2)
+
+    payment_req = PaymentRequest(
+        user_id=user.id,
+        plan_name=req.plan_name.strip(),
+        amount_pkr=req.amount_pkr,
+        amount_usd=amount_usd,
+        credits=req.credits,
+        payment_method=req.payment_method.strip().upper(),
+        transaction_ref=req.transaction_ref.strip(),
+        sender_name=req.sender_name.strip() if req.sender_name else None,
+        sender_account=req.sender_account.strip() if req.sender_account else None,
+        notes=req.notes.strip() if req.notes else None,
+        status="PENDING",
+    )
+    db.add(payment_req)
+    db.add(AuditLogEntry(
+        user_id=user.id,
+        action="PAYMENT_PROOF_SUBMITTED",
+        details=f"Submitted {req.payment_method} proof for PKR {req.amount_pkr:,.0f} ({req.plan_name}) [Ref: {req.transaction_ref}]",
+    ))
+    db.commit()
+    db.refresh(payment_req)
+
+    return {
+        "success": True,
+        "message": "Payment proof submitted successfully. Credits will be allocated immediately upon verification.",
+        "request": payment_req.to_dict(),
+    }
+
+
+@router.get("/my-requests")
+def get_my_payment_requests(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve list of payment proofs submitted by the current authenticated user."""
+    init_db()
+    reqs = db.query(PaymentRequest).filter(
+        PaymentRequest.user_id == user.id
+    ).order_by(PaymentRequest.created_at.desc()).all()
+    return {
+        "success": True,
+        "requests": [r.to_dict() for r in reqs],
+    }
+
+
+@router.get("/admin/requests")
+def get_all_payment_requests_admin(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only: Retrieve all pending, approved, and rejected manual payment requests."""
+    init_db()
+    reqs = db.query(PaymentRequest).order_by(PaymentRequest.created_at.desc()).all()
+    return {
+        "success": True,
+        "requests": [r.to_dict() for r in reqs],
+    }
+
+
+@router.post("/admin/approve/{request_id}")
+def approve_payment_request(
+    request_id: str,
+    req_body: ReviewProofRequest = ReviewProofRequest(),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only: Verify proof and allocate credits and activate plan subscription."""
+    init_db()
+    payment_req = db.query(PaymentRequest).filter(PaymentRequest.id == request_id).first()
+    if not payment_req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+
+    if payment_req.status == "APPROVED":
+        raise HTTPException(status_code=400, detail="This payment request has already been approved.")
+
+    target_user = db.query(User).filter(User.id == payment_req.user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Associated user not found.")
+
+    # 1. Credit the balance
+    target_user.credits_balance += payment_req.credits
+
+    # 2. Upgrade subscription if it corresponds to a plan
+    if payment_req.plan_name in ["Basic", "Master", "Max", "Team", "Core", "Pro", "Enterprise"]:
+        sub = target_user.subscriptions[0] if target_user.subscriptions else None
+        now = datetime.now(timezone.utc)
+        if sub:
+            sub.plan_name = payment_req.plan_name
+            sub.status = "Active"
+            sub.current_period_start = now
+            sub.current_period_end = now + timedelta(days=30)
+        else:
+            new_sub = Subscription(
+                user_id=target_user.id,
+                plan_name=payment_req.plan_name,
+                monthly_price=payment_req.amount_usd,
+                status="Active",
+                current_period_start=now,
+                current_period_end=now + timedelta(days=30),
+            )
+            db.add(new_sub)
+
+    # 3. Create persistent transaction invoice
+    tx = Transaction(
+        user_id=target_user.id,
+        invoice_number=f"PKR-{payment_req.transaction_ref[-8:]}",
+        description=f"{payment_req.payment_method} Payment: {payment_req.plan_name} ({payment_req.credits:,} Credits)",
+        amount=payment_req.amount_usd,
+        currency="USD",
+        status="Paid",
+    )
+    db.add(tx)
+
+    # 4. Mark request approved
+    payment_req.status = "APPROVED"
+    payment_req.reviewed_at = datetime.now(timezone.utc)
+    if req_body.admin_notes:
+        payment_req.admin_notes = req_body.admin_notes
+
+    # 5. Audit log
+    db.add(AuditLogEntry(
+        user_id=admin.id,
+        action="MANUAL_PAYMENT_APPROVED",
+        details=f"Admin {admin.email} approved {payment_req.payment_method} ref '{payment_req.transaction_ref}' for {target_user.email} (+{payment_req.credits:,} credits).",
+    ))
+    db.commit()
+
+    return {
+        "success": True,
+        "message": f"Payment approved. {payment_req.credits:,} credits successfully allocated to {target_user.email}.",
+        "new_balance": target_user.credits_balance,
+    }
+
+
+@router.post("/admin/reject/{request_id}")
+def reject_payment_request(
+    request_id: str,
+    req_body: ReviewProofRequest = ReviewProofRequest(),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only: Reject invalid or fraudulent payment proof."""
+    init_db()
+    payment_req = db.query(PaymentRequest).filter(PaymentRequest.id == request_id).first()
+    if not payment_req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+
+    payment_req.status = "REJECTED"
+    payment_req.reviewed_at = datetime.now(timezone.utc)
+    if req_body.admin_notes:
+        payment_req.admin_notes = req_body.admin_notes
+
+    db.add(AuditLogEntry(
+        user_id=admin.id,
+        action="MANUAL_PAYMENT_REJECTED",
+        details=f"Admin {admin.email} rejected {payment_req.payment_method} ref '{payment_req.transaction_ref}'. Reason: {req_body.admin_notes or 'Unverified'}",
+    ))
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Payment request has been marked as REJECTED.",
+    }
+
 

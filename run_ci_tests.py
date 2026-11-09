@@ -8,6 +8,7 @@ Guarantees zero silent regressions across:
 3. policy_hash salting
 4. Suite E strengthened adversarial re-identification (Tiers 1, 2, 3)
 5. Job #490563 regression (falsy 0.0 confidence & wizard file purge)
+6. Pakistani Banking & Manual Proof Verification Suite
 """
 
 import sys
@@ -45,6 +46,7 @@ def main():
         ("Audit Hardening Suite (batch ownership, WS auth, tenant-scoped telemetry)", ["python", "-m", "unittest", "tests/test_audit_hardening.py"]),
         ("Job #680488 Cascade Isolation & Fallback Rejection", ["python", "-m", "unittest", "tests/test_job_680488_cascade_isolation.py"]),
         ("Job #382356 Multi-Object Vision Detection", ["python", "-m", "unittest", "tests/test_job_382356_multiobject_detection.py"]),
+        ("Pakistani Banking & Manual Proof Verification Suite", ["python", "-m", "unittest", "tests/test_pakistani_billing.py"]),
         ("Comprehensive Multi-Modal CI Test Matrix (5 Modalities, Guards & Feature 38)", ["python", "-m", "unittest", "tests/test_multimodal_comprehensive_matrix.py"]),
     ]
 
