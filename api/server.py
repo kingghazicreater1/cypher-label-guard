@@ -224,7 +224,7 @@ async def health_check():
 
 
 @app.get("/api/v2/registry")
-async def get_feature_registry():
+async def get_feature_registry(user: User = Depends(get_current_user)):
     """Returns the complete manifest catalog of all 38 plugins and their sub-features."""
     features = registry.list_active_features()
     return {

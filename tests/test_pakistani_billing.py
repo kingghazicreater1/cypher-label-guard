@@ -50,16 +50,24 @@ class TestPakistaniBilling(unittest.TestCase):
             cls.clerk.stop()
 
     def test_01_get_pakistan_accounts(self):
-        resp = self.client.get("/api/v2/billing/pakistan-accounts")
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data.get("success"))
-        methods = [a["method"] for a in data.get("accounts", [])]
-        self.assertIn("SADAPAY", methods)
-        self.assertIn("RAAST", methods)
-        self.assertIn("BANK_TRANSFER", methods)
-        packages = data.get("packages", [])
-        self.assertTrue(len(packages) >= 4)
+        from unittest import mock
+        with mock.patch.dict("os.environ", {
+            "SADAPAY_IBAN": "PK25SADA003472758750",
+            "SADAPAY_NUMBER": "03472758750",
+            "RAAST_ID": "03472758750",
+            "BANK_IBAN": "PK00MEZN0000000000000000",
+            "BANK_ACCOUNT_NUMBER": "01010101010101",
+        }):
+            resp = self.client.get("/api/v2/billing/pakistan-accounts")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertTrue(data.get("success"))
+            methods = [a["method"] for a in data.get("accounts", [])]
+            self.assertIn("SADAPAY", methods)
+            self.assertIn("RAAST", methods)
+            self.assertIn("BANK_TRANSFER", methods)
+            packages = data.get("packages", [])
+            self.assertTrue(len(packages) >= 4)
 
     def test_02_submit_proof_and_permissions(self):
         unique_ref = f"SP-TX-{uuid.uuid4().hex[:8]}"

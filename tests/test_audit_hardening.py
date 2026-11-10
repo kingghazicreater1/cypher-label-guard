@@ -155,6 +155,28 @@ class TestAuditHardening(unittest.TestCase):
             self.assertEqual(csv_res.status_code, 200)
             self.assertIn("'=CMD|", csv_res.text)
             self.assertIn("'+SUM(1,2)", csv_res.text)
+
+            # Text Batch CSV download also sanitizes formulas
+            from api import batch_routes
+            batch_routes.BATCH_REGISTRY["batch_csv_inj"] = {
+                "batch_id": "batch_csv_inj",
+                "owner_id": uid,
+                "name": "Formula Batch",
+                "total_rows": 1,
+                "labeled_rows": [{
+                    "SKU": "=HYPERLINK(\"http://evil.com\")",
+                    "Description": "+cmd|' /C calc'!A0",
+                    "Score": "@SUM(1+1)",
+                }],
+            }
+            try:
+                b_res = self.client.get("/api/v2/batch/download/batch_csv_inj", headers=self.a_headers)
+                self.assertEqual(b_res.status_code, 200)
+                self.assertIn("'=HYPERLINK", b_res.text)
+                self.assertIn("'+cmd|", b_res.text)
+                self.assertIn("'@SUM", b_res.text)
+            finally:
+                batch_routes.BATCH_REGISTRY.pop("batch_csv_inj", None)
         finally:
             batch_images_routes.IMAGE_BATCH_REGISTRY.pop("img_mine", None)
 
@@ -223,6 +245,23 @@ class TestAuditHardening(unittest.TestCase):
         res_b = self.client.get("/api/v2/history/folders", headers=self.b_headers)
         self.assertEqual(res_b.status_code, 200)
         self.assertNotIn("UserAPrivateFolder", res_b.json()["folders"])
+
+    def test_guest_billing_summary_clean_and_endpoints_locked(self):
+        # 1. Guest billing summary returns 0 credits and None subscription (no fake Core plan)
+        res = self.client.get("/api/v2/billing/summary")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data.get("is_guest"))
+        self.assertEqual(data.get("credits_balance"), 0)
+        self.assertIsNone(data.get("subscription"))
+
+        # 2. /registry and /keys/slots are locked down for unauthenticated guests (401)
+        self.assertEqual(self.client.get("/api/v2/registry").status_code, 401)
+        self.assertEqual(self.client.get("/api/v2/keys/slots").status_code, 401)
+
+        # 3. Authenticated user can access /registry and /keys/slots (200)
+        self.assertEqual(self.client.get("/api/v2/registry", headers=self.a_headers).status_code, 200)
+        self.assertEqual(self.client.get("/api/v2/keys/slots", headers=self.a_headers).status_code, 200)
 
 
 if __name__ == "__main__":

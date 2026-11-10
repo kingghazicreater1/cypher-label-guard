@@ -66,9 +66,9 @@ def get_billing_summary(user: Optional[User] = Depends(get_optional_current_user
     if not user:
         return {
             "success": True,
-            "subscription": {"plan_name": "Core", "status": "Active", "monthly_price": 129.00},
-            "credits_balance": 5000,
-            "credits_value_usd": 50.00,
+            "subscription": None,
+            "credits_balance": 0,
+            "credits_value_usd": 0.0,
             "default_card": None,
             "total_cards": 0,
             "stripe_configured": bool(STRIPE_SECRET_KEY),

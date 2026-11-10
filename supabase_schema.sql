@@ -150,7 +150,29 @@ CREATE TABLE IF NOT EXISTS public.audit_log_entries (
 
 CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON public.audit_log_entries(user_id);
 
--- 9. Default Workspace Folder insert karein
+-- 9. Payment Requests Table (Pakistani Manual Banking & Proof Verifications)
+CREATE TABLE IF NOT EXISTS public.payment_requests (
+    id VARCHAR(36) PRIMARY KEY DEFAULT uuid_generate_v4()::text,
+    user_id VARCHAR(36) NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    plan_name VARCHAR(50) NOT NULL,
+    amount_pkr DOUBLE PRECISION NOT NULL,
+    amount_usd DOUBLE PRECISION NOT NULL,
+    credits INTEGER NOT NULL,
+    payment_method VARCHAR(50) NOT NULL,
+    transaction_ref VARCHAR(100) UNIQUE NOT NULL,
+    sender_name VARCHAR(100),
+    sender_account VARCHAR(100),
+    notes TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+    admin_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_requests_user_id ON public.payment_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_requests_ref ON public.payment_requests(transaction_ref);
+
+-- 10. Default Workspace Folder insert karein
 INSERT INTO public.folder_records (name)
 VALUES ('General Workspace')
 ON CONFLICT (name) DO NOTHING;

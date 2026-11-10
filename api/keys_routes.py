@@ -525,7 +525,7 @@ class GenericSlotTestRequest(BaseModel):
 
 
 @router.get("/slots")
-async def get_key_slots(user: Optional[User] = Depends(get_optional_current_user)):
+async def get_key_slots(user: User = Depends(get_current_user)):
     """
     Returns the 4 generic Key slots (Key #1 to Key #4) for Parliament voting.
     Auto-binds from provider keys if not yet specifically set, and never wipes existing keys.

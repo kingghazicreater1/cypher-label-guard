@@ -403,6 +403,15 @@ async def get_batch_status(batch_id: str, user: User = Depends(get_current_user)
     }
 
 
+def _sanitize_csv_cell(val: Any) -> Any:
+    """Prevents CSV formula injection in spreadsheet applications (=, +, -, @, \t, \r)."""
+    if isinstance(val, str) and val and val[0] in ("=", "+", "-", "@", "\t", "\r"):
+        if val[0] == "-" and val[1:].replace(".", "", 1).isdigit():
+            return val
+        return f"'{val}"
+    return val
+
+
 # ------------------------------------------------------------------------------
 # 5. Download Completed Labeled CSV
 # ------------------------------------------------------------------------------
@@ -421,7 +430,11 @@ async def download_labeled_csv(batch_id: str, user: User = Depends(get_current_u
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
-    writer.writerows(rows)
+    sanitized_rows = [
+        {k: _sanitize_csv_cell(v) for k, v in r.items()}
+        for r in rows
+    ]
+    writer.writerows(sanitized_rows)
 
     csv_data = output.getvalue()
     safe_name = b["name"].lower().replace(" ", "_").replace("/", "_")

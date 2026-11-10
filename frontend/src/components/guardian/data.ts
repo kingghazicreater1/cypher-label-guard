@@ -51,8 +51,25 @@ export const featureGroups = [
   { name: 'Multi-modal', features: ['Multi-Modal Router', 'Vision API Connector', 'Audio Transcription Pipeline', 'Video Frame Sampler', 'Unified Multi-Modal Output'] },
 ];
 export const auditEvents: string[] = [];
+
+export function sanitizeCsvCell(val: unknown): string {
+  const s = String(val ?? '');
+  if (s.startsWith('=') || s.startsWith('+') || s.startsWith('-') || s.startsWith('@') || s.startsWith('\t') || s.startsWith('\r')) {
+    if (s.startsWith('-') && !isNaN(Number(s))) {
+      return `"${s.replaceAll('"', '""')}"`;
+    }
+    return `"'${s.replaceAll('"', '""')}"`;
+  }
+  return `"${s.replaceAll('"', '""')}"`;
+}
+
 export function exportFile(name: string, data: unknown, csv = false) {
-  const content = csv && Array.isArray(data) && data.length ? [Object.keys(data[0]).join(','), ...data.map(row => Object.values(row).map(v => `"${String(v).replaceAll('"', '""')}"`).join(','))].join('\n') : JSON.stringify(data, null, 2);
+  const content = csv && Array.isArray(data) && data.length
+    ? [
+        Object.keys(data[0]).map(h => `"${String(h).replaceAll('"', '""')}"`).join(','),
+        ...data.map(row => Object.values(row).map(sanitizeCsvCell).join(','))
+      ].join('\n')
+    : JSON.stringify(data, null, 2);
   const url = URL.createObjectURL(new Blob([content], { type: csv ? 'text/csv' : 'application/json' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url);
 }
@@ -132,7 +149,7 @@ export function exportJobsBatch(name: string, jobsList: Job[], format: 'csv' | '
       j.anomaly_detected ? 'YES' : 'NO',
     ];
 
-    return values.map(v => `"${String(v ?? '').replaceAll('"', '""')}"`).join(',');
+    return values.map(sanitizeCsvCell).join(',');
   });
 
   const csvContent = [headers.map(h => `"${h.replaceAll('"', '""')}"`).join(','), ...rows].join('\n');

@@ -153,6 +153,15 @@ def get_audit_logs(
     }
 
 
+def _sanitize_csv_cell(val: Any) -> Any:
+    """Prevents CSV formula injection in spreadsheet applications (=, +, -, @, \t, \r)."""
+    if isinstance(val, str) and val and val[0] in ("=", "+", "-", "@", "\t", "\r"):
+        if val[0] == "-" and val[1:].replace(".", "", 1).isdigit():
+            return val
+        return f"'{val}"
+    return val
+
+
 @router.get("/export")
 def export_jobs_batch(
     folder: Optional[str] = Query(None, description="Filter by folder/collection name"),
@@ -286,7 +295,11 @@ def export_jobs_batch(
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=headers)
     writer.writeheader()
-    writer.writerows(csv_rows)
+    sanitized_rows = [
+        {k: _sanitize_csv_cell(v) for k, v in r.items()}
+        for r in csv_rows
+    ]
+    writer.writerows(sanitized_rows)
 
     return Response(
         content=out.getvalue(),
