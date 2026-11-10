@@ -19,7 +19,7 @@ from core.orchestrator import orchestrator
 from db.database import SessionLocal
 from db.models import User, JobRecord, AuditLogEntry
 from api.auth_routes import get_optional_current_user, get_current_user
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 router = APIRouter(prefix="/api/v2/batch", tags=["Batch Labeling & Dynamic Criteria Engine"])
 

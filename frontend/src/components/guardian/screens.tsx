@@ -2126,12 +2126,12 @@ export function TenantsScreen() {
     }
 
     const planDetails: Record<string, { price: string; credits: string }> = {
-      Basic: { price: '$19.00 / month', credits: '2,500 credits/mo' },
-      Master: { price: '$49.00 / month', credits: '7,500 credits/mo' },
-      Max: { price: '$99.00 / month', credits: '20,000 credits/mo' },
-      Team: { price: '$499.00 / month', credits: '120,000 credits/mo' },
+      Basic: { price: '$19.00 / month', credits: '2,500 credits/mo (~500 items)' },
+      Master: { price: '$49.00 / month', credits: '7,500 credits/mo (~1,500 items)' },
+      Max: { price: '$99.00 / month', credits: '20,000 credits/mo (~4,000 items)' },
+      Team: { price: '$499.00 / month', credits: '120,000 credits/mo (~24,000 items)' },
     };
-    const details = planDetails[plan] || { price: '$49.00 / month', credits: '7,500 credits/mo' };
+    const details = planDetails[plan] || { price: '$49.00 / month', credits: '7,500 credits/mo (~1,500 items)' };
 
     setCheckoutModal({
       type: 'plan',
@@ -2333,10 +2333,10 @@ export function TenantsScreen() {
           <Panel title="Subscription Plans" icon={<Building2 />}>
             <div className="panel-body grid grid-cols-1 md:grid-cols-4 gap-4 pt-2">
               {[
-                { name: 'Basic', price: '$19', credits: '2,500 credits/mo', desc: '4-Model Parliament, All Modalities (Text/Image/Audio/CSV), Standard SLA', current: billingSummary?.subscription?.plan_name === 'Basic' },
-                { name: 'Master', price: '$49', credits: '7,500 credits/mo', desc: 'High-Speed Priority Pool, Deep Vision Inspection, Cryptographic Audit Trail', current: billingSummary?.subscription?.plan_name === 'Master' },
-                { name: 'Max', price: '$99', credits: '20,000 credits/mo', desc: '500 Managed Connections, SHA-256 Proofs, High Priority SLA', current: billingSummary?.subscription?.plan_name === 'Max' },
-                { name: 'Team', price: '$499', credits: '120,000 credits/mo', desc: 'Unlimited Team Members, Dedicated VIP Throughput, Custom Anthropological Weights', current: billingSummary?.subscription?.plan_name === 'Team' },
+                { name: 'Basic', price: '$19', credits: '2,500 credits/mo (~500 items)', desc: '4-Model Parliament, All Modalities (Text/Image/Audio/CSV), Standard SLA', current: billingSummary?.subscription?.plan_name === 'Basic' },
+                { name: 'Master', price: '$49', credits: '7,500 credits/mo (~1,500 items)', desc: 'High-Speed Priority Pool, Deep Vision Inspection, Cryptographic Audit Trail', current: billingSummary?.subscription?.plan_name === 'Master' },
+                { name: 'Max', price: '$99', credits: '20,000 credits/mo (~4,000 items)', desc: '500 Managed Connections, SHA-256 Proofs, High Priority SLA', current: billingSummary?.subscription?.plan_name === 'Max' },
+                { name: 'Team', price: '$499', credits: '120,000 credits/mo (~24,000 items)', desc: 'Unlimited Team Members, Dedicated VIP Throughput, Custom Anthropological Weights', current: billingSummary?.subscription?.plan_name === 'Team' },
               ].map(plan => (
                 <div key={plan.name} className={`p-4 rounded border ${plan.current ? 'border-primary bg-primary/5' : 'border-border/50 bg-background/50'}`}>
                   <div className="flex justify-between items-center mb-1">
@@ -2453,7 +2453,7 @@ export function TenantsScreen() {
                           <div className="flex items-center gap-2">
                             <strong className="text-sm">{pkg.plan_name}</strong>
                             <span className="text-[10px] font-mono text-primary px-1.5 py-0.5 rounded bg-primary/20">
-                              {pkg.credits.toLocaleString()} credits
+                              {pkg.credits.toLocaleString()} credits {pkg.items ? `(~${pkg.items.toLocaleString()} items)` : ''}
                             </span>
                           </div>
                           <p className="text-xs text-muted-foreground">{pkg.desc}</p>

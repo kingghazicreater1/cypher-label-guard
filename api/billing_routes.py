@@ -543,6 +543,69 @@ def grant_credits_admin(
 
 
 # ------------------------------------------------------------------------------
+# Authoritative Server-Side Pricing, Credits & Package Definitions
+# ------------------------------------------------------------------------------
+# 1 item audit ~ 5 credits (1 base text + 2 vision + 1 parliament + 1 crypto proof)
+BILLING_PACKAGES = {
+    "Basic": {
+        "plan_name": "Basic",
+        "pkr": 5200.0,
+        "usd": 19.0,
+        "credits": 2500,
+        "items": 500,
+        "desc": "Standard 4-Model Parliament SLA (~500 items)",
+    },
+    "Master": {
+        "plan_name": "Master",
+        "pkr": 13500.0,
+        "usd": 49.0,
+        "credits": 7500,
+        "items": 1500,
+        "desc": "Priority Pool & Deep Vision Inspection (~1,500 items)",
+    },
+    "Max": {
+        "plan_name": "Max",
+        "pkr": 27000.0,
+        "usd": 99.0,
+        "credits": 20000,
+        "items": 4000,
+        "desc": "500 Managed Connections & SHA-256 Proofs (~4,000 items)",
+    },
+    "Team": {
+        "plan_name": "Team",
+        "pkr": 135000.0,
+        "usd": 499.0,
+        "credits": 120000,
+        "items": 24000,
+        "desc": "Dedicated VIP Chamber & Unlimited Seats (~24,000 items)",
+    },
+    "Starter Pack (5,000 Credits)": {
+        "plan_name": "Starter Pack (5,000 Credits)",
+        "pkr": 2800.0,
+        "usd": 10.0,
+        "credits": 5000,
+        "items": 1000,
+        "desc": "5,000 On-Demand Token Credits (~1,000 items)",
+    },
+    "Growth Pack (20,000 Credits)": {
+        "plan_name": "Growth Pack (20,000 Credits)",
+        "pkr": 11000.0,
+        "usd": 40.0,
+        "credits": 20000,
+        "items": 4000,
+        "desc": "20,000 High-Volume Token Credits (~4,000 items)",
+    },
+}
+
+CREDIT_PACKS_USD = {
+    1000: {"usd": 10.0, "pkr": 2800.0},
+    5000: {"usd": 45.0, "pkr": 12600.0},
+    10000: {"usd": 80.0, "pkr": 22400.0},
+    25000: {"usd": 175.0, "pkr": 49000.0},
+}
+
+
+# ------------------------------------------------------------------------------
 # Pakistan-First Dual-Track Billing (SadaPay / Raast / Bank IBAN & Lemon Squeezy)
 # ------------------------------------------------------------------------------
 
@@ -561,24 +624,34 @@ class ApproveManualPaymentRequest(BaseModel):
 @router.get("/bank-details")
 def get_bank_transfer_details():
     """Returns official Pakistani bank / SadaPay deposit details for wire transfer payments."""
+    sadapay_num = os.getenv("SADAPAY_NUMBER", "").strip()
+    raast_id = os.getenv("RAAST_ID", "").strip()
+    bank_iban = os.getenv("BANK_IBAN", "").strip()
+
+    if not (sadapay_num or raast_id or bank_iban):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pakistani manual payment channels are not configured on this server.",
+        )
+
     return {
         "success": True,
         "channels": {
             "sadapay": {
-                "account_title": os.getenv("SADAPAY_ACCOUNT_TITLE", "CypherLabelGuard Treasury"),
-                "number": os.getenv("SADAPAY_NUMBER", "03XX-XXXXXXX"),
+                "account_title": os.getenv("SADAPAY_ACCOUNT_TITLE", os.getenv("SADAPAY_TITLE", "AV GUARDIAN")),
+                "number": sadapay_num or "Not configured",
                 "currency": "PKR",
             },
             "raast": {
-                "account_title": os.getenv("RAAST_ACCOUNT_TITLE", "CypherLabelGuard Treasury"),
-                "raast_id": os.getenv("RAAST_ID", "03XX-XXXXXXX"),
+                "account_title": os.getenv("RAAST_ACCOUNT_TITLE", os.getenv("RAAST_TITLE", "AV GUARDIAN")),
+                "raast_id": raast_id or "Not configured",
                 "currency": "PKR",
             },
             "bank_transfer": {
-                "bank_name": os.getenv("BANK_NAME", "Meezan Bank / HBL"),
-                "account_title": os.getenv("BANK_ACCOUNT_TITLE", "CypherLabelGuard"),
-                "account_number": os.getenv("BANK_ACCOUNT_NUMBER", "XXXXXXXXXXXXXX"),
-                "iban": os.getenv("BANK_IBAN", "PKXXXXXXXXXXXXXXXXXXXXXX"),
+                "bank_name": os.getenv("BANK_NAME", "Meezan Bank Ltd"),
+                "account_title": os.getenv("BANK_ACCOUNT_TITLE", os.getenv("BANK_TITLE", "AV GUARDIAN")),
+                "account_number": os.getenv("BANK_ACCOUNT_NUMBER", ""),
+                "iban": bank_iban or "Not configured",
                 "currency": "PKR",
             },
         },
@@ -598,16 +671,63 @@ def submit_manual_payment(
     db: Session = Depends(get_db),
 ):
     """Submits a SadaPay / Raast / Bank wire transfer for administrator confirmation."""
-    credit_packs = {1000: 10.0, 5000: 45.0, 10000: 80.0, 25000: 175.0}
-    usd_val = credit_packs.get(req.credit_amount, req.credit_amount * 0.01)
+    init_db()
+    ref_clean = req.transaction_reference.strip()
 
-    inv_num = f"TID-{uuid.uuid4().hex[:6].upper()}"
+    # Unify duplicate check across both PaymentRequest and Transaction
+    existing_pr = db.query(PaymentRequest).filter(PaymentRequest.transaction_ref == ref_clean).first()
+    existing_tx = db.query(Transaction).filter(Transaction.invoice_number == f"TID-{ref_clean}").first()
+    if existing_pr or existing_tx:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Payment reference '{ref_clean}' has already been submitted.",
+        )
+
+    # Server-side credit determination: NEVER trust arbitrary client credits
+    if req.credit_amount in CREDIT_PACKS_USD:
+        pack_info = CREDIT_PACKS_USD[req.credit_amount]
+        usd_val = pack_info["usd"]
+        expected_pkr = pack_info["pkr"]
+        if req.amount_paid_pkr is not None and req.amount_paid_pkr < expected_pkr * 0.90:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount PKR {req.amount_paid_pkr:,.0f} is insufficient for {req.credit_amount:,} credits (Required: PKR {expected_pkr:,}).",
+            )
+        credits_to_grant = req.credit_amount
+        actual_pkr = req.amount_paid_pkr or expected_pkr
+    else:
+        # Strict rate calculation from paid PKR: 1 credit = 2.8 PKR ($0.01 / credit)
+        if not req.amount_paid_pkr or req.amount_paid_pkr <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid credit package: {req.credit_amount}. Allowed packages: 1,000, 5,000, 10,000, 25,000.",
+            )
+        credits_to_grant = int(req.amount_paid_pkr / 2.8)
+        actual_pkr = req.amount_paid_pkr
+        usd_val = round(actual_pkr / 280.0, 2)
+
+    inv_num = f"TID-{ref_clean}"
     desc = (
-        f"Manual Transfer via {req.payment_channel} (Ref: {req.transaction_reference.strip()}) "
-        f"for {req.credit_amount:,} Credits"
+        f"Manual Transfer via {req.payment_channel} (Ref: {ref_clean}) "
+        f"for {credits_to_grant:,} Credits"
     )
     if req.sender_name:
         desc += f" by {req.sender_name.strip()}"
+
+    # Unified: record in both PaymentRequest and Transaction
+    payment_req = PaymentRequest(
+        user_id=user.id,
+        plan_name=f"{credits_to_grant:,} Credits Pack",
+        amount_pkr=actual_pkr,
+        amount_usd=usd_val,
+        credits=credits_to_grant,
+        payment_method=req.payment_channel.strip().upper(),
+        transaction_ref=ref_clean,
+        sender_name=req.sender_name.strip() if req.sender_name else None,
+        notes=desc,
+        status="PENDING",
+    )
+    db.add(payment_req)
 
     tx = Transaction(
         user_id=user.id,
@@ -622,7 +742,7 @@ def submit_manual_payment(
     log = AuditLogEntry(
         user_id=user.id,
         action="MANUAL_PAYMENT_SUBMITTED",
-        details=f"Submitted {req.payment_channel} transfer (Ref: {req.transaction_reference}) for {req.credit_amount:,} credits.",
+        details=f"Submitted {req.payment_channel} transfer (Ref: {ref_clean}) for {credits_to_grant:,} credits.",
     )
     db.add(log)
     db.commit()
@@ -630,7 +750,7 @@ def submit_manual_payment(
 
     return {
         "success": True,
-        "message": f"Payment reference submitted successfully! Once verified, {req.credit_amount:,} credits will be allocated.",
+        "message": f"Payment reference submitted successfully! Once verified, {credits_to_grant:,} credits will be allocated.",
         "transaction": tx.to_dict(),
     }
 
@@ -642,20 +762,28 @@ def approve_manual_payment(
     db: Session = Depends(get_db),
 ):
     """Admin endpoint to verify and allocate credits from a submitted manual payment."""
+    init_db()
     tx = db.query(Transaction).filter(Transaction.id == req.transaction_id).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found.")
     if tx.status == "Paid":
         raise HTTPException(status_code=400, detail="Transaction is already approved and paid.")
 
-    # Parse credit amount from description
-    import re
-    match = re.search(r"for\s+([0-9,]+)\s+Credits", tx.description)
-    credits_to_grant = int(match.group(1).replace(",", "")) if match else int(tx.amount * 100)
-
     target_user = db.query(User).filter(User.id == tx.user_id).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="Target user not found.")
+
+    # Strictly find the linked PaymentRequest to read the verified credits column (NO REGEX INJECTION!)
+    clean_ref = tx.invoice_number.replace("TID-", "")
+    payment_req = db.query(PaymentRequest).filter(PaymentRequest.transaction_ref == clean_ref).first()
+
+    if payment_req:
+        credits_to_grant = payment_req.credits
+        payment_req.status = "APPROVED"
+        payment_req.reviewed_at = datetime.now(timezone.utc)
+    else:
+        # Fallback strictly to dollar value mapping: $1 = 100 credits, never parsing regex!
+        credits_to_grant = int(tx.amount * 100)
 
     target_user.credits_balance += credits_to_grant
     tx.status = "Paid"
@@ -683,27 +811,50 @@ async def lemonsqueezy_webhook(
 ):
     """
     Lemon Squeezy Merchant of Record (MoR) automated webhook.
-    Receives order_created events, validates HMAC-SHA256 signature, and grants credits.
+    Strictly verifies HMAC-SHA256 signature, enforces server-side plan pricing & credits,
+    and returns idempotent HTTP 200 on redeliveries.
     """
-    secret = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "")
-    body_bytes = await request.body()
+    secret = os.getenv("LEMONSQUEEZY_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lemon Squeezy billing is not configured yet: webhook secret is missing.",
+        )
 
-    if secret:
-        import hmac
-        import hashlib
-        signature = request.headers.get("X-Signature", "")
-        digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(digest, signature):
-            raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    signature = request.headers.get("X-Signature", "").strip()
+    if not signature:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Signature header.",
+        )
+
+    body_bytes = await request.body()
+    import hmac
+    import hashlib
+    digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(digest, signature):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature.")
 
     try:
         import json
         payload = json.loads(body_bytes.decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload.")
 
     event_name = payload.get("meta", {}).get("event_name", "")
     if event_name in ("order_created", "subscription_payment_success"):
+        order_id = str(payload.get("data", {}).get("id", uuid.uuid4().hex[:6]))
+        invoice_num = f"LS-{order_id}"
+
+        # Idempotency check: return 200 OK if order has already been processed (prevent 500 crashes)
+        existing_tx = db.query(Transaction).filter(Transaction.invoice_number == invoice_num).first()
+        if existing_tx:
+            return {
+                "success": True,
+                "status": "already_processed",
+                "message": f"Order #{order_id} has already been processed.",
+            }
+
         custom_data = payload.get("meta", {}).get("custom_data", {})
         user_id = custom_data.get("user_id")
         user_email = payload.get("data", {}).get("attributes", {}).get("user_email")
@@ -716,14 +867,38 @@ async def lemonsqueezy_webhook(
             user = db.query(User).filter(User.email == str(user_email).strip().lower()).first()
 
         if user:
-            total_cents = payload.get("data", {}).get("attributes", {}).get("total", 0)
-            credits_to_add = int(custom_data.get("credits", total_cents))  # 1 cent = 1 credit default
+            total_cents = int(payload.get("data", {}).get("attributes", {}).get("total", 0))
+
+            # Server-side credit determination: NEVER trust custom_data.get("credits") directly
+            plan_name = custom_data.get("plan_name")
+            matched_pkg = None
+            if plan_name and plan_name in BILLING_PACKAGES:
+                matched_pkg = BILLING_PACKAGES[plan_name]
+            else:
+                first_item = payload.get("data", {}).get("attributes", {}).get("first_order_item", {})
+                item_name = first_item.get("variant_name") or first_item.get("product_name") or ""
+                for pname, pdata in BILLING_PACKAGES.items():
+                    if pname.lower() in item_name.lower():
+                        matched_pkg = pdata
+                        break
+
+            if matched_pkg:
+                expected_cents = int(matched_pkg["usd"] * 100 * 0.90)  # allow up to 10% coupon margin
+                if total_cents < expected_cents:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Paid amount (${total_cents/100:.2f}) is less than required price for {matched_pkg['plan_name']}.",
+                    )
+                credits_to_add = matched_pkg["credits"]
+            else:
+                # Top-up by dollar amount paid (1 cent = 1 credit, i.e. $1 = 100 credits)
+                credits_to_add = max(0, total_cents)
+
             user.credits_balance += credits_to_add
 
-            order_id = str(payload.get("data", {}).get("id", uuid.uuid4().hex[:6]))
             tx = Transaction(
                 user_id=user.id,
-                invoice_number=f"LS-{order_id}",
+                invoice_number=invoice_num,
                 description=f"Lemon Squeezy Order #{order_id} ({credits_to_add:,} Credits)",
                 amount=round(total_cents / 100.0, 2),
                 currency="USD",
@@ -747,7 +922,7 @@ async def lemonsqueezy_webhook(
 class SubmitProofRequest(BaseModel):
     plan_name: str = Field(..., description="Basic, Master, Max, Team or Custom Credits")
     amount_pkr: float = Field(..., gt=0, description="Amount transferred in PKR")
-    credits: int = Field(..., gt=0, description="Requested credits amount")
+    credits: Optional[int] = Field(default=None, description="Requested credits amount (ignored/calculated server-side)")
     payment_method: str = Field("SADAPAY", description="SADAPAY, RAAST, BANK_TRANSFER, or NAYAPAY")
     transaction_ref: str = Field(..., min_length=4, description="Transaction ID or Reference number")
     sender_name: Optional[str] = None
@@ -757,49 +932,62 @@ class SubmitProofRequest(BaseModel):
 
 class ReviewProofRequest(BaseModel):
     admin_notes: Optional[str] = None
+    confirmed_amount_pkr: Optional[float] = Field(default=None, description="Actual received amount in bank account")
 
 
 @router.get("/pakistan-accounts")
 def get_pakistan_accounts():
     """Returns official Pakistani banking & Raast channels and current pricing packages."""
+    sadapay_iban = os.getenv("SADAPAY_IBAN", "").strip()
+    sadapay_number = os.getenv("SADAPAY_NUMBER", "").strip()
+    raast_id = os.getenv("RAAST_ID", "").strip()
+    bank_iban = os.getenv("BANK_IBAN", "").strip()
+
+    # If no channels are actually configured in env, refuse to return mock/fake details
+    if not (sadapay_iban or sadapay_number or raast_id or bank_iban):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pakistani manual payment channels are not configured on this server.",
+        )
+
+    accounts = []
+    if sadapay_number or sadapay_iban:
+        accounts.append({
+            "method": "SADAPAY",
+            "title": "SadaPay Direct Transfer",
+            "account_title": os.getenv("SADAPAY_TITLE", "AV GUARDIAN"),
+            "iban": sadapay_iban or None,
+            "account_number": sadapay_number or None,
+            "badge": "0% Fee · Instant 24/7",
+            "instructions": "Send to SadaPay via mobile number or IBAN. Submit transaction ID below.",
+        })
+    if raast_id:
+        accounts.append({
+            "method": "RAAST",
+            "title": "State Bank of Pakistan (Raast Instant P2P)",
+            "account_title": os.getenv("RAAST_TITLE", "AV GUARDIAN"),
+            "raast_id": raast_id,
+            "badge": "Instant SBP Settlement",
+            "instructions": "Transfer via Raast ID from any Pakistani mobile banking app with zero transaction charges.",
+        })
+    if bank_iban or os.getenv("BANK_ACCOUNT_NUMBER"):
+        accounts.append({
+            "method": "BANK_TRANSFER",
+            "title": f"Commercial Bank IBFT ({os.getenv('BANK_NAME', 'Meezan Bank Ltd')})",
+            "account_title": os.getenv("BANK_TITLE", "AV GUARDIAN"),
+            "bank_name": os.getenv("BANK_NAME", "Meezan Bank Ltd"),
+            "account_number": os.getenv("BANK_ACCOUNT_NUMBER") or None,
+            "iban": bank_iban or None,
+            "badge": "Inter-Bank Funds Transfer",
+            "instructions": "Standard IBFT transfer. Enter the banking reference number or transaction ID.",
+        })
+
+    packages = list(BILLING_PACKAGES.values())
+
     return {
         "success": True,
-        "accounts": [
-            {
-                "method": "SADAPAY",
-                "title": "SadaPay Direct Transfer",
-                "account_title": os.getenv("SADAPAY_TITLE", "AV GUARDIAN ENTERPRISE"),
-                "iban": os.getenv("SADAPAY_IBAN", "PK36SADA0000001234567890"),
-                "account_number": os.getenv("SADAPAY_NUMBER", "0300-1234567"),
-                "badge": "0% Fee · Instant 24/7",
-                "instructions": "Send to SadaPay via mobile number or IBAN. Submit transaction ID below.",
-            },
-            {
-                "method": "RAAST",
-                "title": "State Bank of Pakistan (Raast Instant P2P)",
-                "account_title": os.getenv("RAAST_TITLE", "AV GUARDIAN ENTERPRISE"),
-                "raast_id": os.getenv("RAAST_ID", "03001234567"),
-                "badge": "Instant SBP Settlement",
-                "instructions": "Transfer via Raast ID from any Pakistani mobile banking app with zero transaction charges.",
-            },
-            {
-                "method": "BANK_TRANSFER",
-                "title": "Commercial Bank IBFT (Meezan / HBL / Alfalah)",
-                "account_title": os.getenv("BANK_TITLE", "AV GUARDIAN ENTERPRISE"),
-                "bank_name": os.getenv("BANK_NAME", "Meezan Bank Ltd"),
-                "iban": os.getenv("BANK_IBAN", "PK00MEZN0000000000000000"),
-                "badge": "Inter-Bank Funds Transfer",
-                "instructions": "Standard IBFT transfer. Enter the 6 to 12 digit banking reference number.",
-            },
-        ],
-        "packages": [
-            {"plan_name": "Basic", "pkr": 5200, "usd": 19, "credits": 2500, "desc": "Standard 4-Model Parliament SLA"},
-            {"plan_name": "Master", "pkr": 13500, "usd": 49, "credits": 7500, "desc": "Priority Pool & Deep Vision Inspection"},
-            {"plan_name": "Max", "pkr": 27000, "usd": 99, "credits": 20000, "desc": "500 Managed Connections & SHA-256 Proofs"},
-            {"plan_name": "Team", "pkr": 135000, "usd": 499, "credits": 120000, "desc": "Dedicated VIP Chamber & Unlimited Seats"},
-            {"plan_name": "Starter Pack (5,000 Credits)", "pkr": 2800, "usd": 10, "credits": 5000, "desc": "5,000 On-Demand Token Credits"},
-            {"plan_name": "Growth Pack (20,000 Credits)", "pkr": 11000, "usd": 40, "credits": 20000, "desc": "20,000 High-Volume Token Credits"},
-        ],
+        "accounts": accounts,
+        "packages": packages,
     }
 
 
@@ -811,25 +999,41 @@ def submit_payment_proof(
 ):
     """Submit proof of manual payment via SadaPay, Raast, or Pakistani bank transfer."""
     init_db()
+    ref_clean = req.transaction_ref.strip()
+
     existing = db.query(PaymentRequest).filter(
-        PaymentRequest.transaction_ref == req.transaction_ref.strip()
+        PaymentRequest.transaction_ref == ref_clean
     ).first()
     if existing:
         raise HTTPException(
-            status_code=400,
-            detail=f"A payment proof with reference '{req.transaction_ref}' has already been submitted (Status: {existing.status})."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A payment proof with reference '{ref_clean}' has already been submitted (Status: {existing.status})."
         )
 
-    amount_usd = round(req.amount_pkr / 280.0, 2)
+    # Server-side credit calculation: NEVER TRUST req.credits!
+    plan_name_clean = req.plan_name.strip()
+    if plan_name_clean in BILLING_PACKAGES:
+        pkg = BILLING_PACKAGES[plan_name_clean]
+        if req.amount_pkr < pkg["pkr"] * 0.90:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Amount PKR {req.amount_pkr:,.0f} is insufficient for plan {plan_name_clean} (Requires PKR {pkg['pkr']:,}).",
+            )
+        credits_to_allocate = pkg["credits"]
+        amount_usd = pkg["usd"]
+    else:
+        # Custom credits strictly derived from transferred PKR: max 1 credit per 2.8 PKR ($0.01 / credit)
+        credits_to_allocate = max(1, int(req.amount_pkr / 2.8))
+        amount_usd = round(req.amount_pkr / 280.0, 2)
 
     payment_req = PaymentRequest(
         user_id=user.id,
-        plan_name=req.plan_name.strip(),
+        plan_name=plan_name_clean,
         amount_pkr=req.amount_pkr,
         amount_usd=amount_usd,
-        credits=req.credits,
+        credits=credits_to_allocate,
         payment_method=req.payment_method.strip().upper(),
-        transaction_ref=req.transaction_ref.strip(),
+        transaction_ref=ref_clean,
         sender_name=req.sender_name.strip() if req.sender_name else None,
         sender_account=req.sender_account.strip() if req.sender_account else None,
         notes=req.notes.strip() if req.notes else None,
@@ -839,7 +1043,7 @@ def submit_payment_proof(
     db.add(AuditLogEntry(
         user_id=user.id,
         action="PAYMENT_PROOF_SUBMITTED",
-        details=f"Submitted {req.payment_method} proof for PKR {req.amount_pkr:,.0f} ({req.plan_name}) [Ref: {req.transaction_ref}]",
+        details=f"Submitted {req.payment_method} proof for PKR {req.amount_pkr:,.0f} ({plan_name_clean}) [Ref: {ref_clean}]",
     ))
     db.commit()
     db.refresh(payment_req)
@@ -901,8 +1105,23 @@ def approve_payment_request(
     if not target_user:
         raise HTTPException(status_code=404, detail="Associated user not found.")
 
+    # Validate amount received against package requirements
+    effective_pkr = req_body.confirmed_amount_pkr if req_body.confirmed_amount_pkr is not None else payment_req.amount_pkr
+    if payment_req.plan_name in BILLING_PACKAGES:
+        pkg = BILLING_PACKAGES[payment_req.plan_name]
+        if effective_pkr < pkg["pkr"] * 0.90:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot approve: confirmed amount PKR {effective_pkr:,.0f} is less than required price for {payment_req.plan_name} (PKR {pkg['pkr']:,}).",
+            )
+        credits_to_grant = pkg["credits"]
+        payment_req.credits = credits_to_grant
+    else:
+        credits_to_grant = max(1, int(effective_pkr / 2.8))
+        payment_req.credits = credits_to_grant
+
     # 1. Credit the balance
-    target_user.credits_balance += payment_req.credits
+    target_user.credits_balance += credits_to_grant
 
     # 2. Upgrade subscription if it corresponds to a plan
     if payment_req.plan_name in ["Basic", "Master", "Max", "Team", "Core", "Pro", "Enterprise"]:
@@ -928,7 +1147,7 @@ def approve_payment_request(
     tx = Transaction(
         user_id=target_user.id,
         invoice_number=f"PKR-{payment_req.transaction_ref[-8:]}",
-        description=f"{payment_req.payment_method} Payment: {payment_req.plan_name} ({payment_req.credits:,} Credits)",
+        description=f"{payment_req.payment_method} Payment: {payment_req.plan_name} ({credits_to_grant:,} Credits)",
         amount=payment_req.amount_usd,
         currency="USD",
         status="Paid",
@@ -945,13 +1164,13 @@ def approve_payment_request(
     db.add(AuditLogEntry(
         user_id=admin.id,
         action="MANUAL_PAYMENT_APPROVED",
-        details=f"Admin {admin.email} approved {payment_req.payment_method} ref '{payment_req.transaction_ref}' for {target_user.email} (+{payment_req.credits:,} credits).",
+        details=f"Admin {admin.email} approved {payment_req.payment_method} ref '{payment_req.transaction_ref}' for {target_user.email} (+{credits_to_grant:,} credits).",
     ))
     db.commit()
 
     return {
         "success": True,
-        "message": f"Payment approved. {payment_req.credits:,} credits successfully allocated to {target_user.email}.",
+        "message": f"Payment approved. {credits_to_grant:,} credits successfully allocated to {target_user.email}.",
         "new_balance": target_user.credits_balance,
     }
 

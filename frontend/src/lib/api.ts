@@ -528,6 +528,7 @@ export interface PricingPackage {
   pkr: number;
   usd: number;
   credits: number;
+  items?: number;
   desc: string;
 }
 
