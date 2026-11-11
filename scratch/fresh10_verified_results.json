@@ -1,0 +1,362 @@
+[
+  {
+    "id": 1,
+    "filename": "g4acf8c7efdf08a9ae68f7552d5e7ffe69dce5177f0e06888e89d687c0ff45e56a406c8c0ed2328c9df5c9416ca143411cfc666e9bb53c4491bec70a14bff9c89_1280.jpg",
+    "latency_s": 52.52,
+    "human_ground_truth": {
+      "visual_description": "8 white eggs in open cardboard carton, close up",
+      "expected_product": "White eggs in carton / Eggs",
+      "expected_category": "Food",
+      "expected_color": "White",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Carton of white eggs",
+      "category": "Food",
+      "color": "white eggs (white), cardboard carton (beige, brown)",
+      "human_present": "No",
+      "overall_confidence": 100.0,
+      "criteria_confidence": {
+        "Product Name": 100.0,
+        "Category": 100.0,
+        "Color": 100.0,
+        "Human Present": 100.0
+      },
+      "annotations_count": 8,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "STALEMATE",
+      "affirmative_votes": 21
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 2,
+    "filename": "g1e081829c9619b666a9a614f04669f8dfd6d91ee9a91f3022586e54147e34cc61785588adfb14217a1944706a93cd9aec6e607267387d3165cf7cf47895b62ee_1280.jpg",
+    "latency_s": 6.78,
+    "human_ground_truth": {
+      "visual_description": "Green Polo Ralph Lauren Cologne bottle with gold cap and gold polo player logo",
+      "expected_product": "Polo Ralph Lauren Cologne / Perfume bottle",
+      "expected_category": "Beauty",
+      "expected_color": "Green",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Polo Ralph Lauren Cologne Bottle",
+      "category": "Beauty",
+      "color": "green",
+      "human_present": "No",
+      "overall_confidence": 90.0,
+      "criteria_confidence": {
+        "Product Name": 90.0,
+        "Category": 90.0,
+        "Color": 90.0,
+        "Human Present": 90.0
+      },
+      "annotations_count": 1,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "HUMAN_REVIEW_REQUIRED",
+      "affirmative_votes": 11
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 3,
+    "filename": "g9439a29d7f199ef24ca0764c506083af09e3cc9e0353d9db76feb2e46f9c4d5f545a018b285097cfacfcbab003fd6165c3dad7e867691958cbb24abaf879747e_1280.jpg",
+    "latency_s": 51.82,
+    "human_ground_truth": {
+      "visual_description": "Stack of black automobile rubber tires on dark blue backdrop",
+      "expected_product": "Car tires / Automobile tires",
+      "expected_category": "Automotive",
+      "expected_color": "Black",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Tires",
+      "category": "Automotive",
+      "color": "black",
+      "human_present": "No",
+      "overall_confidence": 100.0,
+      "criteria_confidence": {
+        "Product Name": 100.0,
+        "Category": 100.0,
+        "Color": 100.0,
+        "Human Present": 100.0
+      },
+      "annotations_count": 5,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "CONFIRMED",
+      "affirmative_votes": 32
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 4,
+    "filename": "g84ea5620da53ec123967c5bcdd8532a897b6c2d42364da2419fe7c8e99021da1b953c42dbd35e7100672203d4a9f1c37249d1d9d3b58946b1e7f4bf9347571ef_1280.jpg",
+    "latency_s": 13.25,
+    "human_ground_truth": {
+      "visual_description": "Person holding smartphone browsing Amazon shopping app for jackets, glasses reflecting screen",
+      "expected_product": "Smartphone / Person browsing online shopping",
+      "expected_category": "Electronics",
+      "expected_color": "Black",
+      "expected_human": "Yes"
+    },
+    "detected": {
+      "product_name": "Smartphone",
+      "category": "Electronics",
+      "color": "Black; silver",
+      "human_present": "Yes",
+      "overall_confidence": 90.0,
+      "criteria_confidence": {
+        "Product Name": 90.0,
+        "Category": 90.0,
+        "Color": 90.0,
+        "Human Present": 90.0
+      },
+      "annotations_count": 4,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "HUMAN_REVIEW_REQUIRED",
+      "affirmative_votes": 11
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 5,
+    "filename": "g7b349a4245f28c2ed11bffb3f5101045cd55cf620ee9d5891871ac035710335e88870db334781580df91843a787b16cffe6443672f1d8261f012aa1ec7f36442_1280.jpg",
+    "latency_s": 48.44,
+    "human_ground_truth": {
+      "visual_description": "Young woman in sleeveless denim vest wearing gold chain necklace",
+      "expected_product": "Woman wearing denim vest / Gold chain necklace",
+      "expected_category": "Fashion",
+      "expected_color": "Blue",
+      "expected_human": "Yes"
+    },
+    "detected": {
+      "product_name": "Gold Necklace",
+      "category": "Fashion",
+      "color": "gold",
+      "human_present": "Yes",
+      "overall_confidence": 100.0,
+      "criteria_confidence": {
+        "Product Name": 100.0,
+        "Category": 100.0,
+        "Color": 100.0,
+        "Human Present": 100.0
+      },
+      "annotations_count": 2,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "CONFIRMED",
+      "affirmative_votes": 32
+    },
+    "accuracy": {
+      "product_match": false,
+      "category_match": true,
+      "color_match": false,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 6,
+    "filename": "g547e62e012e3bc6d9dbdceb1006a6dfd1595801472c0e6ec6d53310273f7646ce590fa839c0a2bf63a566ac978e17a2a98e0080e66cb66b4bf69a58c30c18a39_1280.jpg",
+    "latency_s": 7.86,
+    "human_ground_truth": {
+      "visual_description": "Single bright neon coral/pink Nike running sneaker with black swoosh on pink background",
+      "expected_product": "Nike running sneaker / Athletic shoe",
+      "expected_category": "Fashion",
+      "expected_color": "Pink",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Nike athletic shoe",
+      "category": "Fashion",
+      "color": "coral pink; black",
+      "human_present": "No",
+      "overall_confidence": 90.0,
+      "criteria_confidence": {
+        "Product Name": 90.0,
+        "Category": 90.0,
+        "Color": 90.0,
+        "Human Present": 90.0
+      },
+      "annotations_count": 1,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "HUMAN_REVIEW_REQUIRED",
+      "affirmative_votes": 11
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 7,
+    "filename": "g4733ffa37581d43903167ff7d6b34efdd682c91a98fd24ca5ae8629c94b1643b60317d0c9140da7d2e7461aed9c9ab1e28519d3c513463c6e6b91297c662a3db_1280.jpg",
+    "latency_s": 39.8,
+    "human_ground_truth": {
+      "visual_description": "Carton of brown chicken eggs with one egg elevated in center on white background",
+      "expected_product": "Brown chicken eggs in carton",
+      "expected_category": "Food",
+      "expected_color": "Brown",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Brown eggs in a carton",
+      "category": "Food",
+      "color": "brown eggs (brown), egg carton (light brown/tan)",
+      "human_present": "No",
+      "overall_confidence": 100.0,
+      "criteria_confidence": {
+        "Product Name": 100.0,
+        "Category": 100.0,
+        "Color": 100.0,
+        "Human Present": 100.0
+      },
+      "annotations_count": 17,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "CONFIRMED",
+      "affirmative_votes": 32
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 8,
+    "filename": "g40131c79668db1f2160ca0682c208f480d91232669b97c441abc0c7afc56a87bc334e722c25d31fbf55bc96087887286af25e3aa34846c1f0afc78b8fb275c61_1280.jpg",
+    "latency_s": 13.2,
+    "human_ground_truth": {
+      "visual_description": "Aging cellar with wooden shelves stacked with round yellow wheels of cheese",
+      "expected_product": "Wheels of cheese on cellar shelves",
+      "expected_category": "Food",
+      "expected_color": "Yellow",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "cheese wheel",
+      "category": "Food",
+      "color": "yellow; golden yellow; pale yellow",
+      "human_present": "No",
+      "overall_confidence": 90.0,
+      "criteria_confidence": {
+        "Product Name": 90.0,
+        "Category": 90.0,
+        "Color": 90.0,
+        "Human Present": 90.0
+      },
+      "annotations_count": 23,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "HUMAN_REVIEW_REQUIRED",
+      "affirmative_votes": 11
+    },
+    "accuracy": {
+      "product_match": false,
+      "category_match": true,
+      "color_match": true,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 9,
+    "filename": "gd54ef08fd4f75bbfca74c54b89835075299a9e333c712319582dba4093a100cea4baf0a6fdce5d43d9659861eee7e44e2faff30a797ae4068b0ddf30b783c878_1280.jpg",
+    "latency_s": 61.35,
+    "human_ground_truth": {
+      "visual_description": "Cluster of ripe orange-red Pyracantha berries on branch with green leaves",
+      "expected_product": "Pyracantha berries / Orange-red berries",
+      "expected_category": "Nature",
+      "expected_color": "Orange",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Apple",
+      "category": "Food",
+      "color": "Red",
+      "human_present": "No",
+      "overall_confidence": 100.0,
+      "criteria_confidence": {
+        "Product Name": 100.0,
+        "Category": 100.0,
+        "Color": 100.0,
+        "Human Present": 100.0
+      },
+      "annotations_count": 2,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "CONFIRMED",
+      "affirmative_votes": 32
+    },
+    "accuracy": {
+      "product_match": false,
+      "category_match": false,
+      "color_match": false,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  },
+  {
+    "id": 10,
+    "filename": "g2180947064bf8abd2a42b6f44f769f05fbe3b0584667902cf7967ad37115e4cb298ae52563dec27a154070d39a0a7948b84d3f579b1885be55f2c15c3f505db7_1280.jpg",
+    "latency_s": 5.6,
+    "human_ground_truth": {
+      "visual_description": "Prescription eyeglasses with wire frame and clear lenses on white background",
+      "expected_product": "Prescription eyeglasses / Spectacles",
+      "expected_category": "Eyewear",
+      "expected_color": "Dark Grey",
+      "expected_human": "No"
+    },
+    "detected": {
+      "product_name": "Eyeglasses",
+      "category": "Eyewear",
+      "color": "gunmetal grey and brown",
+      "human_present": "No",
+      "overall_confidence": 90.0,
+      "criteria_confidence": {
+        "Product Name": 90.0,
+        "Category": 90.0,
+        "Color": 90.0,
+        "Human Present": 90.0
+      },
+      "annotations_count": 1,
+      "consensus_label": "E-Commerce & Retail",
+      "consensus_decision": "HUMAN_REVIEW_REQUIRED",
+      "affirmative_votes": 11
+    },
+    "accuracy": {
+      "product_match": true,
+      "category_match": true,
+      "color_match": false,
+      "human_match": true
+    },
+    "status": "SUCCESS"
+  }
+]
