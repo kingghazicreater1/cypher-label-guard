@@ -175,46 +175,15 @@ def detect_visual_entities(raw_bytes: bytes, context_hints: str = "") -> List[st
                             detected.append("Apple (Fruit)")
                             break
 
-        # 2. Rectangular Screens / Laptops / Devices
-        edges = cv2.Canny(gray, 40, 140)
-        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        has_large_laptop_rect = False
-        has_phone_rect = False
-        has_lens_circle = False
-
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area > (total_area * 0.06):
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                aspect = bw / float(bh)
-                if 1.15 <= aspect <= 2.3:
-                    roi_hsv = img_hsv[by:by+bh, bx:bx+bw]
-                    if roi_hsv.size > 0:
-                        mean_sat = np.mean(roi_hsv[:, :, 1])
-                        mean_val = np.mean(roi_hsv[:, :, 2])
-                        if mean_sat < 75 or mean_val < 50:
-                            has_large_laptop_rect = True
-            elif (total_area * 0.003) < area < (total_area * 0.08):
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                aspect = bw / float(bh)
-                if (0.35 <= aspect <= 0.68) or (1.6 <= aspect <= 2.5):
-                    roi = gray[by:by+bh, bx:bx+bw]
-                    if roi.size > 0 and np.mean(roi) < 100:
-                        has_phone_rect = True
-                elif 0.78 <= aspect <= 1.28:
-                    roi = gray[by:by+bh, bx:bx+bw]
-                    if roi.size > 0 and np.mean(roi) < 80:
-                        has_lens_circle = True
-
-        if has_large_laptop_rect or any(w in hints for w in ["laptop", "macbook", "computer", "notebook"]):
-            if "MacBook Laptop" not in detected and (has_large_laptop_rect or "laptop" in hints or "macbook" in hints):
+        if any(w in hints for w in ["laptop", "macbook", "computer", "notebook"]):
+            if "MacBook Laptop" not in detected:
                 detected.append("MacBook Laptop")
 
-        if has_phone_rect or any(w in hints for w in ["phone", "smartphone", "mobile"]):
+        if any(w in hints for w in ["phone", "smartphone", "mobile"]):
             if "Smartphone" not in detected:
                 detected.append("Smartphone")
 
-        if has_lens_circle or any(w in hints for w in ["lens", "lens cap", "camera"]):
+        if any(w in hints for w in ["lens", "lens cap", "camera"]):
             if "Lens Cap" not in detected:
                 detected.append("Lens Cap")
 
@@ -341,7 +310,7 @@ class VisionConnectorFeature(BaseFeature):
         )
 
         # 4. Real Multimodal Vision API (Gemini Direct / OpenRouter / OpenAI)
-        gemini_key = os.getenv("GEMINI_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
         primary_product_name = None
@@ -421,7 +390,11 @@ class VisionConnectorFeature(BaseFeature):
 
                 # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable)
                 if gemini_key and raw_b64_str:
-                    g_models = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest"]
+                    preferred_g = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
+                    g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
+                    # Deduplicate and bound attempts so retries + secondary fit inside Standard 75s budget
+                    seen_g = set()
+                    g_models = [m for m in g_models if m and not (m in seen_g or seen_g.add(m))][:3]
                     for g_model_name in g_models:
                         try:
                             g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model_name}:generateContent"
@@ -435,9 +408,9 @@ class VisionConnectorFeature(BaseFeature):
                                         ]
                                     }
                                 ],
-                                "generationConfig": {"temperature": 0.0},
+                                "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
                             }
-                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=40.0)
+                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=18.0)
                             vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
                             if g_resp.status_code == 200:
                                 g_data = g_resp.json()
@@ -447,6 +420,8 @@ class VisionConnectorFeature(BaseFeature):
                                     clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
                                 elif "```" in clean_json:
                                     clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                                if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
+                                    clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
                                 parsed = json.loads(clean_json)
                                 used_model = g_model_name
                                 break
@@ -479,7 +454,7 @@ class VisionConnectorFeature(BaseFeature):
                         "max_tokens": 800,
                     }
                     try:
-                        sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=25.0)
+                        sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=16.0)
                         if sec_resp.status_code == 200:
                             sec_data = sec_resp.json()
                             raw_reply = sec_data["choices"][0]["message"]["content"].strip()
@@ -490,6 +465,9 @@ class VisionConnectorFeature(BaseFeature):
                                 clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
                             parsed = json.loads(clean_json)
                             used_model = sec_model
+                        else:
+                            vision_error_note = f"{vision_error_note}; secondary ({sec_model}): HTTP {sec_resp.status_code}".strip("; ")
+                            _log.warning("Secondary vision query returned HTTP %s for %s", sec_resp.status_code, sec_model)
                     except Exception as sec_err:
                         vision_error_note = f"secondary: {type(sec_err).__name__} {str(sec_err)[:80]}"
                         _log.warning("Secondary vision query failed: %s", vision_error_note)

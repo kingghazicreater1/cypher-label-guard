@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -78,7 +79,85 @@ class TestCurrencyAndLegend(unittest.TestCase):
 
     def test_price_label_uses_configured_currency(self):
         with patch.dict(os.environ, {"REPORT_PRICE_CURRENCY": "pkr"}):
-            self.assertEqual(bir._col_label("price"), "price (PKR)")
+            self.assertEqual(bir._col_label("price"), "price (PKR, AI estimate)")
+
+    def test_human_review_is_not_billed(self):
+        items = [
+            {"status": "COMPLETED", "decision": "CONFIRMED"},
+            {"status": "COMPLETED", "decision": "PARTIAL"},
+            {"status": "COMPLETED", "decision": "HUMAN_REVIEW"},
+            {"status": "FAILED"},
+        ]
+        self.assertEqual(len(bir._billable_items(items)), 2)
+
+    def test_vision_timeout_without_attempted_flag_fails_when_key_set(self):
+        timed_out_ctx = SimpleNamespace(
+            flags={},
+            metadata={"vision_api_attempted": None, "vision_api_ok": None},
+        )
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key", "GOOGLE_API_KEY": "",
+                                     "OPENROUTER_API_KEY": "", "OPENAI_API_KEY": ""}):
+            err = bir._vision_failure_reason(timed_out_ctx)
+            self.assertIsNotNone(err)
+            self.assertIn("timed out", err.lower())
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": "",
+                                     "OPENROUTER_API_KEY": "", "OPENAI_API_KEY": ""}):
+            self.assertIsNone(bir._vision_failure_reason(timed_out_ctx))
+
+        ok_ctx = SimpleNamespace(
+            flags={"vision_processed": True},
+            metadata={"vision_api_attempted": True, "vision_api_ok": True},
+        )
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            self.assertIsNone(bir._vision_failure_reason(ok_ctx))
+
+    def test_vision_timeout_triggers_failed_and_zero_billing_in_batch(self):
+        bid = "test_vision_timeout_batch"
+        bir.IMAGE_BATCH_REGISTRY[bid] = {
+            "batch_id": bid,
+            "owner_id": "u1",
+            "name": "t",
+            "folder_name": "f",
+            "depth_tier": "Standard",
+            "status": "QUEUED",
+            "total": 1,
+            "done": 0,
+            "failed": 0,
+            "progress_pct": 0.0,
+            "start_ts": 0.0,
+            "precharged_credits": 5,
+            "credits_charged": 5,
+            "criteria": [{"name": "name of product"}],
+            "items": [{"index": 0, "name": "ga3139.jpg", "image_data": "data:image/jpeg;base64,/9j/4AAQ",
+                       "status": "QUEUED"}],
+        }
+
+        async def _fake_pipeline(_ctx):
+            return SimpleNamespace(
+                flags={},  # Orchestrator timeout returned unmodified context (no vision_processed)
+                metadata={"criteria_results": [_crit("name of product", "Smartphone", 95.0)]},
+                trace_id="trace-timeout",
+            )
+
+        fake_db = SimpleNamespace(
+            query=lambda *_a, **_kw: SimpleNamespace(filter=lambda *_f: SimpleNamespace(first=lambda: None)),
+            add=lambda *_a, **_kw: None,
+            commit=lambda: None,
+            rollback=lambda: None,
+            close=lambda: None,
+        )
+        try:
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}), \
+                 patch.object(bir.orchestrator, "run_pipeline", side_effect=_fake_pipeline), \
+                 patch.object(bir, "SessionLocal", return_value=fake_db):
+                asyncio.run(bir._run_batch(bid, "u1", "u@test", "Standard", [{"name": "name of product"}]))
+            item = bir.IMAGE_BATCH_REGISTRY[bid]["items"][0]
+            self.assertEqual(item["status"], "FAILED")
+            self.assertIn("timed out", item["error"].lower())
+            self.assertEqual(len(bir._billable_items(bir.IMAGE_BATCH_REGISTRY[bid]["items"])), 0)
+        finally:
+            bir.IMAGE_BATCH_REGISTRY.pop(bid, None)
 
     def test_legend_covers_every_decision(self):
         for key in ("CONFIRMED", "PARTIAL", "HUMAN_REVIEW", "REJECTED"):
@@ -108,8 +187,12 @@ class TestReportExport(unittest.TestCase):
             return asyncio.run(bir.image_batch_report("b1", fmt, None))
 
     def test_csv_has_currency_note_in_header(self):
-        body = self._get("csv").body.decode()
-        self.assertIn("currency not specified", body.splitlines()[0])
+        with patch.dict(os.environ, {"REPORT_PRICE_CURRENCY": ""}):
+            header = self._get("csv").body.decode().splitlines()[0]
+        self.assertIn("currency not specified", header)
+        with patch.dict(os.environ, {"REPORT_PRICE_CURRENCY": "PKR"}):
+            header = self._get("csv").body.decode().splitlines()[0]
+        self.assertIn("PKR, AI estimate", header)
 
     def test_json_contains_legend(self):
         data = json.loads(self._get("json").body)

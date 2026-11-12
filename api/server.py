@@ -707,11 +707,17 @@ async def run_inference(
                     # 1. Product Name / Title / Items in image: If unverified or rejected, bind verified vision entities
                     if any(w in cn_low for w in ["name", "title", "product", "item", "label", "specimen", "object", "entity"]):
                         ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
+                        ABSTRACT_PHRASES = ("rectangle", "rectangular shape", "square", "circle", "circular shape", "triangle", "triangular shape", "polygon", "geometric shape", "color block", "color patch", "color swatch")
+
+                        def _is_abstract_text(txt: str) -> bool:
+                            low = txt.strip().lower()
+                            return (low in ABSTRACT_SHAPES) or any(p in low for p in ABSTRACT_PHRASES)
+
                         val_clean = str(item.get("value", "")).strip().lower()
                         is_plural_query = any(w in cn_low for w in ["products in image", "products", "items", "objects", "entities"])
-                        is_abstract_val = (val_clean in ABSTRACT_SHAPES) or any(s in val_clean for s in ["rectangle", "square", "circle", "triangle", "polygon", "geometric shape", "color block", "color patch"])
-                        valid_objs = [o for o in vis_objects if (o.strip().lower() not in ABSTRACT_SHAPES and not any(s in o.strip().lower() for s in ["rectangle", "square", "circle", "triangle", "polygon", "geometric shape", "color block", "color patch"]))]
-                        valid_primary = vis_primary if (vis_primary and vis_primary.strip().lower() not in ABSTRACT_SHAPES and not any(s in vis_primary.strip().lower() for s in ["rectangle", "square", "circle", "triangle", "polygon", "geometric shape", "color block", "color patch"])) else ""
+                        is_abstract_val = _is_abstract_text(val_clean)
+                        valid_objs = [o for o in vis_objects if not _is_abstract_text(o)]
+                        valid_primary = vis_primary if (vis_primary and not _is_abstract_text(vis_primary)) else ""
                         is_echo = (val_clean == cn_low) or (val_clean in ["product name", "item name", "field value", "unspecified", "unknown", "product", "item"])
                         is_rej = item.get("anomaly") or is_echo or val.startswith("[REJECTED") or val.startswith("[UNVERIFIED") or val.startswith("Offline:")
 

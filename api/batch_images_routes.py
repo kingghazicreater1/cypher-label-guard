@@ -136,6 +136,30 @@ def _compute_decision(crit: List[Dict[str, Any]], consensus: Dict[str, Any], ove
     return decision, aff_votes
 
 
+def _vision_failure_reason(final: Any) -> Optional[str]:
+    """Fail cleanly when the vision stage timed out or configured vision APIs did not answer."""
+    meta = getattr(final, "metadata", None) or {}
+    flags = getattr(final, "flags", None) or {}
+    if bool(meta.get("vision_api_attempted")) and not meta.get("vision_api_ok"):
+        detail = str(meta.get("vision_error") or "no detail")[:120]
+        return (
+            "Vision provider did not respond for this photo, so no reliable label was produced. "
+            f"Not charged - please retry. ({detail})"
+        )
+    has_vision_key = bool(
+        os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
+    if has_vision_key and not flags.get("vision_processed"):
+        return (
+            "Vision connector timed out or was skipped before inspecting this photo. "
+            "Not charged - please retry."
+        )
+    return None
+
+
 def _public_item(item: Dict[str, Any]) -> Dict[str, Any]:
     """Item view without the heavy image payload. Uses list copy to avoid concurrent mutation."""
     return {k: v for k, v in list(item.items()) if k != "image_data"}
@@ -175,20 +199,16 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
                 final = await orchestrator.run_pipeline(ctx)
                 crit = final.metadata.get("criteria_results") or []
                 bad = (not crit) or any((not c.get("value")) or c.get("value") == "PROVIDER_UNAVAILABLE" for c in crit)
-                vision_down = bool(final.metadata.get("vision_api_attempted")) and not final.metadata.get("vision_api_ok")
+                vision_err = _vision_failure_reason(final)
                 if bad:
                     # Honest failure: never invent labels when providers did not answer.
                     item["status"] = "FAILED"
                     item["error"] = "Parliament returned no valid consensus (providers unavailable or rate limited)."
-                elif vision_down:
-                    # The vision provider was configured but did not answer. Labeling from the
-                    # local fallback alone would produce blank/weak labels, so fail it and refund.
+                elif vision_err:
+                    # The vision provider was configured but timed out or failed to answer. Labeling from
+                    # the local fallback alone produces blank/hallucinated labels, so fail it and refund.
                     item["status"] = "FAILED"
-                    item["error"] = (
-                        "Vision provider did not respond for this photo, so no reliable label was produced. "
-                        "Not charged - please retry. "
-                        f"({str(final.metadata.get('vision_error') or 'no detail')[:120]})"
-                    )
+                    item["error"] = vision_err
                 elif _no_extraction_ratio(crit) >= 0.5:
                     # Majority of requested fields came back empty ("Not specified"). Do not charge for blanks.
                     item["status"] = "FAILED"
@@ -224,7 +244,9 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
     try:
         user = db.query(User).filter(User.id == user_id).first()
         completed = [i for i in state["items"] if i["status"] == "COMPLETED"]
-        actual_charge = cost_each * len(completed)
+        # Pilot policy: photos that need human review are delivered but NOT charged.
+        billable = _billable_items(state["items"])
+        actual_charge = cost_each * len(billable)
         precharged = state.get("precharged_credits", cost_each * state["total"])
         refund = max(0, precharged - actual_charge)
         if user:
@@ -241,7 +263,7 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
                     status="Completed",
                     progress=100,
                     labels_count=1,
-                    cost=f"${cost_each * 0.001:.3f}",
+                    cost=f"${(0 if it.get('decision') == 'HUMAN_REVIEW' else cost_each) * 0.001:.3f}",
                     consensus_label=it.get("decision", "CONFIRMED"),
                     affirmative_votes=it.get("affirmative_votes", 32 if it.get("decision") == "CONFIRMED" else 0),
                     trace_id=it.get("trace_id"),
@@ -430,12 +452,17 @@ async def image_batch_status(batch_id: str, user: Optional[User] = Depends(get_o
     }
 
 
+def _billable_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Only completed photos with a trustworthy decision are charged. HUMAN_REVIEW is free."""
+    return [i for i in items if i.get("status") == "COMPLETED" and i.get("decision") != "HUMAN_REVIEW"]
+
+
 def _col_label(name: str) -> str:
-    """Report column label. Price-like fields get a currency note so numbers are never ambiguous.
-    Set REPORT_PRICE_CURRENCY (e.g. PKR) to state the currency; otherwise it is flagged as unspecified."""
+    """Report column label. Price-like fields are flagged as AI estimates so they are never read as listed prices.
+    Set REPORT_PRICE_CURRENCY (e.g. PKR) to state the currency."""
     if re.search(r"price|cost|mrp|amount|rate", name, re.IGNORECASE) and not re.search(r"\(.*\)", name):
         cur = os.getenv("REPORT_PRICE_CURRENCY", "").strip().upper()
-        return f"{name} ({cur})" if cur else f"{name} (AI estimate, currency not specified)"
+        return f"{name} ({cur}, AI estimate)" if cur else f"{name} (AI estimate, currency not specified)"
     return name
 
 
@@ -560,7 +587,7 @@ async def image_batch_report(
             _cell(r["Lineage_Hash"], 20),
         ])
     # Fixed column widths (A4 landscape usable width ~794pt) so cells never run into each other.
-    fixed = [95, 58, 34, 34, 62]  # Photo, Decision, Votes, Conf %, Lineage
+    fixed = [88, 66, 34, 34, 61]  # Photo, Decision, Votes, Conf %, Lineage
     usable = 794 - sum(fixed)
     per_crit = max(55, int(usable / max(1, len(cn))))
     col_widths = fixed[:4] + [per_crit] * len(cn) + [fixed[4]]
