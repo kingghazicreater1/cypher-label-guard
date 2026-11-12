@@ -196,8 +196,12 @@ async def _execute_batch_job(
     Uses concurrency semaphores to maintain optimal throughput without rate-limit throttling.
     """
     batch_state = BATCH_REGISTRY[batch_id]
+    # Auto-pacing: spaces provider calls under each provider's rate limit (see core/provider_pacer.py).
+    from core.provider_pacer import activate_for_current_task, pacing_enabled
+    batch_state["paced"] = activate_for_current_task()
     total = len(rows)
-    semaphore = asyncio.Semaphore(10)  # 10 parallel pipeline passes
+    eff_concurrency = 2 if pacing_enabled() else 10
+    semaphore = asyncio.Semaphore(eff_concurrency)
     
     ordered_rows: List[Optional[Dict[str, Any]]] = [None] * total
     completed_count = 0

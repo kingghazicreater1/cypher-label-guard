@@ -1,0 +1,221 @@
+{
+  "summary": {
+    "batch_status": "COMPLETED",
+    "total_seconds": 579.0,
+    "completed": 10,
+    "failed": 0,
+    "category_match": "9/10",
+    "human_match": "10/10",
+    "pacer": {
+      "calls_today": {
+        "generativelanguage.googleapis.com": 34,
+        "api.groq.com": 31,
+        "openrouter.ai": 60
+      },
+      "rate_limit_hits": 40,
+      "in_cooldown": false
+    }
+  },
+  "rows": [
+    {
+      "image": "01_white_eggs.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 69.3,
+      "values": {
+        "Product Name": "White Eggs in Carton",
+        "Category": "Food",
+        "Color": "White eggs (white), Cardboard carton (beige/brown)",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Food",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "02_polo_cologne.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 52.3,
+      "values": {
+        "Product Name": "Polo Ralph Lauren Cologne Bottle",
+        "Category": "Beauty",
+        "Color": "Green glass bottle, gold cap and logo",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Beauty",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "03_car_tires.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 42.9,
+      "values": {
+        "Product Name": "Stack of tires",
+        "Category": "Automotive",
+        "Color": "black",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Automotive",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "04_smartphone_amazon.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 70.0,
+      "values": {
+        "Product Name": "Smartphone",
+        "Category": "Electronics",
+        "Color": "black, silver",
+        "Human Present": "Yes"
+      },
+      "expected": {
+        "Category": "Electronics",
+        "Human Present": "Yes"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "05_woman_gold_necklace.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 64.3,
+      "values": {
+        "Product Name": "Gold chain necklace",
+        "Category": "Fashion",
+        "Color": "gold",
+        "Human Present": "Yes"
+      },
+      "expected": {
+        "Category": "Fashion",
+        "Human Present": "Yes"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "06_nike_sneaker.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 46.0,
+      "values": {
+        "Product Name": "Nike athletic shoe",
+        "Category": "Fashion",
+        "Color": "coral pink, black",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Fashion",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "07_brown_eggs.jpg",
+      "status": "COMPLETED",
+      "decision": "PARTIAL",
+      "votes": "32/32",
+      "seconds": 47.4,
+      "values": {
+        "Product Name": "Brown eggs in a carton",
+        "Category": "Food",
+        "Color": "brown",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Food",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "08_cheese_wheels.jpg",
+      "status": "COMPLETED",
+      "decision": "PARTIAL",
+      "votes": "21/32",
+      "seconds": 83.5,
+      "values": {
+        "Product Name": "wheel of cheese",
+        "Category": "Food",
+        "Color": "golden yellow",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Food",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "09_pyracantha_berries.jpg",
+      "status": "COMPLETED",
+      "decision": "PARTIAL",
+      "votes": "32/32",
+      "seconds": 58.4,
+      "values": {
+        "Product Name": "Cotoneaster berries",
+        "Category": "Food",
+        "Color": "Red, Green",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Nature",
+        "Human Present": "No"
+      },
+      "category_match": false,
+      "human_match": true,
+      "error": null
+    },
+    {
+      "image": "10_eyeglasses.jpg",
+      "status": "COMPLETED",
+      "decision": "CONFIRMED",
+      "votes": "32/32",
+      "seconds": 44.1,
+      "values": {
+        "Product Name": "Eyeglasses",
+        "Category": "Eyewear",
+        "Color": "gunmetal gray; brown temples",
+        "Human Present": "No"
+      },
+      "expected": {
+        "Category": "Eyewear",
+        "Human Present": "No"
+      },
+      "category_match": true,
+      "human_match": true,
+      "error": null
+    }
+  ]
+}

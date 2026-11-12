@@ -47,6 +47,7 @@ def main():
         ("Job #680488 Cascade Isolation & Fallback Rejection", ["python", "-m", "unittest", "tests/test_job_680488_cascade_isolation.py"]),
         ("Job #382356 Multi-Object Vision Detection", ["python", "-m", "unittest", "tests/test_job_382356_multiobject_detection.py"]),
         ("Pakistani Banking & Manual Proof Verification Suite", ["python", "-m", "unittest", "tests/test_pakistani_billing.py"]),
+        ("Provider Auto-Pacer & Truthful Progress Suite (429 backoff, spacing, no false claims)", ["python", "-m", "unittest", "tests/test_provider_pacer.py"]),
         ("Comprehensive Multi-Modal CI Test Matrix (5 Modalities, Guards & Feature 38)", ["python", "-m", "unittest", "tests/test_multimodal_comprehensive_matrix.py"]),
     ]
 

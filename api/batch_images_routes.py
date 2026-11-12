@@ -83,13 +83,21 @@ class ImageBatchRequest(BaseModel):
 
 
 def _public_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    """Item view without the heavy image payload."""
-    return {k: v for k, v in item.items() if k != "image_data"}
+    """Item view without the heavy image payload. Uses list copy to avoid concurrent mutation."""
+    return {k: v for k, v in list(item.items()) if k != "image_data"}
 
 
 async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, criteria: List[Dict[str, Any]]):
     state = IMAGE_BATCH_REGISTRY[batch_id]
-    sem = asyncio.Semaphore(IMAGE_CONCURRENCY)
+    # Auto-pacing: spaces provider calls under each provider's rate limit so the batch
+    # finishes completely (slower) instead of losing votes to HTTP 429.
+    from core.provider_pacer import activate_for_current_task, pacing_enabled
+    state["paced"] = activate_for_current_task()
+    # On free tier, enforce strictly serialized (concurrency=1) queue to prevent burst flooding
+    # 40+ simultaneous LLM calls which trips the 75s feature timeout circuit breaker.
+    eff_concurrency = 1 if pacing_enabled() else max(1, int(os.getenv("BATCH_IMAGE_CONCURRENCY", "20")))
+    state["concurrency"] = eff_concurrency
+    sem = asyncio.Semaphore(eff_concurrency)
     cost_each = CREDIT_COST.get(depth, 5)
     effective_depth = depth
     if depth == "Fast" and (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY")):
@@ -317,6 +325,29 @@ def _owned(batch_id: str, user: Optional[User]) -> Dict[str, Any]:
     return state
 
 
+def _eta_seconds(s: Dict[str, Any], elapsed: float) -> Optional[int]:
+    """Estimate from the real observed rate. None until at least one item has finished."""
+    if s["status"] != "PROCESSING" or s["done"] <= 0:
+        return None
+    per_item = elapsed / s["done"]
+    return int(round(per_item * (s["total"] - s["done"])))
+
+
+def _progress_message(s: Dict[str, Any], elapsed: float) -> str:
+    """Plain, truthful progress text. Does not claim any verification that is not happening."""
+    total, done = s["total"], s["done"]
+    if s["status"] == "COMPLETED":
+        return f"Completed: {total - s['failed']}/{total} items labeled" + (
+            f", {s['failed']} could not be processed (credits refunded)." if s["failed"] else "."
+        )
+    if s["status"] == "FAILED":
+        return "This batch could not be processed. Credits were refunded."
+    current = min(done + 1, total)
+    eta = _eta_seconds(s, elapsed)
+    eta_txt = "estimating time remaining..." if eta is None else f"about {max(1, round(eta / 60))} min remaining"
+    return f"Processing item {current}/{total} - queued processing, {eta_txt}"
+
+
 @router.get("/status/{batch_id}")
 async def image_batch_status(batch_id: str, user: Optional[User] = Depends(get_optional_current_user)):
     s = _owned(batch_id, user)
@@ -328,13 +359,15 @@ async def image_batch_status(batch_id: str, user: Optional[User] = Depends(get_o
         "folder_name": s["folder_name"],
         "status": s["status"],
         "total": s["total"],
-        "done": s["done"],
-        "failed": s["failed"],
-        "progress_pct": s["progress_pct"],
-        "concurrency": s["concurrency"],
-        "credits_charged": s["credits_charged"],
+        "done": s.get("done", 0),
+        "failed": s.get("failed", 0),
+        "progress_pct": s.get("progress_pct", 0.0),
+        "concurrency": s.get("concurrency", IMAGE_CONCURRENCY),
+        "credits_charged": s.get("credits_charged", 0),
         "elapsed_seconds": elapsed,
-        "items": [_public_item(i) for i in s["items"]],
+        "progress_message": _progress_message(s, elapsed),
+        "eta_seconds": _eta_seconds(s, elapsed),
+        "items": [_public_item(i) for i in list(s.get("items", []))],
     }
 
 
