@@ -346,11 +346,14 @@ class VisionConnectorFeature(BaseFeature):
         openai_key = os.getenv("OPENAI_API_KEY")
         primary_product_name = None
         item_colors_desc = None
-
+        vision_api_attempted = False
+        vision_api_ok = False
+        vision_error_note = ""
         if (img_data or raw_image_bytes) and (gemini_key or openrouter_key or openai_key):
             try:
                 import httpx
                 import json
+                vision_api_attempted = True
                 from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client
                 client = get_shared_client()
 
@@ -434,7 +437,8 @@ class VisionConnectorFeature(BaseFeature):
                                 ],
                                 "generationConfig": {"temperature": 0.0},
                             }
-                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=25.0)
+                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=40.0)
+                            vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
                             if g_resp.status_code == 200:
                                 g_data = g_resp.json()
                                 raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -447,7 +451,8 @@ class VisionConnectorFeature(BaseFeature):
                                 used_model = g_model_name
                                 break
                         except Exception as g_err:
-                            _log.debug("Gemini model %s query failed, trying next: %s", g_model_name, g_err)
+                            vision_error_note = f"{g_model_name}: {type(g_err).__name__} {str(g_err)[:80]}"
+                            _log.warning("Gemini vision model %s failed, trying next: %s", g_model_name, vision_error_note)
 
                 # 2. Secondary: OpenRouter or OpenAI
                 if not parsed and (openrouter_key or openai_key) and img_url_to_send:
@@ -486,7 +491,8 @@ class VisionConnectorFeature(BaseFeature):
                             parsed = json.loads(clean_json)
                             used_model = sec_model
                     except Exception as sec_err:
-                        _log.debug("Secondary vision query failed: %s", sec_err)
+                        vision_error_note = f"secondary: {type(sec_err).__name__} {str(sec_err)[:80]}"
+                        _log.warning("Secondary vision query failed: %s", vision_error_note)
 
                 if parsed and isinstance(parsed, dict):
                     ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
@@ -577,8 +583,10 @@ class VisionConnectorFeature(BaseFeature):
                         yolo_boxes = gemini_boxes
 
                     visual_summary = f"Verified Vision Analysis ({used_model}): {raw_reply}"
+                    vision_api_ok = True
             except Exception as e:
-                pass  # Graceful fallback to zero-retention local analyzer
+                vision_error_note = f"{type(e).__name__} {str(e)[:80]}"
+                _log.warning("Vision API stage failed, using local analyzer only: %s", vision_error_note)  # Graceful fallback to zero-retention local analyzer
 
         # Bridge visual inspection findings into text context bus for Parliament voting
         current_payload["text"] = f"{base_text} [VISUAL_INSPECTION: {visual_summary}]".strip()
@@ -589,6 +597,9 @@ class VisionConnectorFeature(BaseFeature):
 
         metadata = dict(context.metadata)
         metadata["vision_connector_status"] = "TRI_VISION_PARSED"
+        metadata["vision_api_attempted"] = vision_api_attempted
+        metadata["vision_api_ok"] = vision_api_ok
+        metadata["vision_error"] = "" if vision_api_ok else vision_error_note
         metadata["visual_dominant_color"] = dominant_color
         metadata["visual_quality"] = quality_assessment
         metadata["visual_defects"] = defect_status

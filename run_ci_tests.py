@@ -48,6 +48,7 @@ def main():
         ("Job #382356 Multi-Object Vision Detection", ["python", "-m", "unittest", "tests/test_job_382356_multiobject_detection.py"]),
         ("Pakistani Banking & Manual Proof Verification Suite", ["python", "-m", "unittest", "tests/test_pakistani_billing.py"]),
         ("Provider Auto-Pacer & Truthful Progress Suite (429 backoff, spacing, no false claims)", ["python", "-m", "unittest", "tests/test_provider_pacer.py"]),
+        ("Batch Decision Gates (quorum, blank refund, currency note, PDF export)", ["python", "-m", "unittest", "tests/test_batch_decision_gates.py"]),
         ("Comprehensive Multi-Modal CI Test Matrix (5 Modalities, Guards & Feature 38)", ["python", "-m", "unittest", "tests/test_multimodal_comprehensive_matrix.py"]),
     ]
 

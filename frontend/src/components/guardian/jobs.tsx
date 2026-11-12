@@ -1489,7 +1489,15 @@ export function NewJobScreen() {
       try {
         if (isCreatingFolder && customFolderName.trim()) await addFolder(customFolderName.trim());
         const images = await Promise.all(
-          imageFiles.map(async (f) => ({ name: f.name, data: await fileToResizedDataUrl(f) }))
+          imageFiles.map(async (f) => {
+            const data = await fileToResizedDataUrl(f);
+            try {
+              if (typeof window !== 'undefined' && window.sessionStorage) {
+                sessionStorage.setItem(`avg_img_${f.name}`, data);
+              }
+            } catch {}
+            return { name: f.name, data };
+          })
         );
         const res = await startImageBatch({
           name: name || `${imageFiles.length} Photos Inspection`,
@@ -3029,7 +3037,10 @@ function VisionLabeledImageStudio({
 
   const isDiscordantQA = hasDiscordance && !hasFallback;
 
-  const displayImgUrl = job.imageUrl || NO_IMAGE_PLACEHOLDER;
+  const sessionCachedImg = typeof window !== 'undefined' && window.sessionStorage ? sessionStorage.getItem(`avg_img_${job.name}`) : null;
+  const displayImgUrl = (job.imageUrl && job.imageUrl !== NO_IMAGE_PLACEHOLDER)
+    ? job.imageUrl
+    : (sessionCachedImg || NO_IMAGE_PLACEHOLDER);
 
 
 
@@ -4581,7 +4592,7 @@ function JobLabelsTab({
               <div className="mb-4 rounded-xl overflow-hidden bg-zinc-950 border border-border flex items-center justify-center p-3">
                 <div className="relative inline-block max-w-full">
                   <img
-                    src={job.imageUrl || NO_IMAGE_PLACEHOLDER}
+                    src={(job.imageUrl && job.imageUrl !== NO_IMAGE_PLACEHOLDER) ? job.imageUrl : ((typeof window !== 'undefined' && window.sessionStorage ? sessionStorage.getItem(`avg_img_${job.name}`) : null) || NO_IMAGE_PLACEHOLDER)}
                     alt={job.name}
                     className="block max-w-full h-auto max-h-[360px] object-contain rounded-lg shadow-md select-none"
                   />

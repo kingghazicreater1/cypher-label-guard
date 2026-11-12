@@ -82,6 +82,60 @@ class ImageBatchRequest(BaseModel):
     images: Optional[List[BatchImageItem]] = Field(default_factory=list)
 
 
+DECISION_LEGEND = {
+    "CONFIRMED": "Enough independent models agreed (28+/32 votes). Safe to use.",
+    "PARTIAL": "Models partly agreed (17-27/32 votes or moderate confidence). Verify before use.",
+    "HUMAN_REVIEW": "Quorum not reached (fewer than 3 agreeing models). A person must check this label.",
+    "REJECTED": "Models disagreed or flagged an anomaly. Check manually.",
+}
+
+_PLACEHOLDER_VALUES = {"", "not specified", "not specified in document", "unknown", "n/a", "none", "provider_unavailable"}
+
+
+def _no_extraction_ratio(crit: List[Dict[str, Any]]) -> float:
+    """Share of requested fields where no model extracted anything (placeholder value, zero confidence)."""
+    if not crit:
+        return 1.0
+    empty = 0
+    for c in crit:
+        val = str(c.get("value", "")).strip().lower()
+        try:
+            conf = float(c.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        reason = str(c.get("anomaly_reason", "")).lower()
+        if val in _PLACEHOLDER_VALUES or (conf <= 0.0 and c.get("anomaly") and "did not extract" in reason):
+            empty += 1
+    return empty / len(crit)
+
+
+def _compute_decision(crit: List[Dict[str, Any]], consensus: Dict[str, Any], overall_conf: float) -> tuple:
+    """Returns (decision, affirmative_votes). Confidence alone can never produce CONFIRMED:
+    the parliament quorum (Rule 20) must also be met."""
+    has_anomaly = any(c.get("anomaly", False) for c in crit)
+    try:
+        aff_votes = int(consensus.get("affirmative_votes") or 0)
+    except (TypeError, ValueError):
+        aff_votes = 0
+    quorum_missing = any("quorum not reached" in str(c.get("agreement", "")).lower() for c in crit)
+
+    if has_anomaly or (overall_conf > 0 and overall_conf < 50.0):
+        decision = "REJECTED"
+    elif overall_conf >= 90.0:
+        decision = "CONFIRMED"
+    elif overall_conf >= 70.0:
+        decision = "PARTIAL"
+    else:
+        cand_label = consensus.get("label") or "UNKNOWN"
+        decision = "CONFIRMED" if "UNKNOWN" in cand_label else cand_label
+
+    if decision in ("CONFIRMED", "PARTIAL") and (quorum_missing or aff_votes < 17):
+        decision = "HUMAN_REVIEW"
+    elif decision == "CONFIRMED" and aff_votes < 28:
+        decision = "PARTIAL"
+    return decision, aff_votes
+
+
 def _public_item(item: Dict[str, Any]) -> Dict[str, Any]:
     """Item view without the heavy image payload. Uses list copy to avoid concurrent mutation."""
     return {k: v for k, v in list(item.items()) if k != "image_data"}
@@ -121,31 +175,36 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
                 final = await orchestrator.run_pipeline(ctx)
                 crit = final.metadata.get("criteria_results") or []
                 bad = (not crit) or any((not c.get("value")) or c.get("value") == "PROVIDER_UNAVAILABLE" for c in crit)
+                vision_down = bool(final.metadata.get("vision_api_attempted")) and not final.metadata.get("vision_api_ok")
                 if bad:
                     # Honest failure: never invent labels when providers did not answer.
                     item["status"] = "FAILED"
                     item["error"] = "Parliament returned no valid consensus (providers unavailable or rate limited)."
+                elif vision_down:
+                    # The vision provider was configured but did not answer. Labeling from the
+                    # local fallback alone would produce blank/weak labels, so fail it and refund.
+                    item["status"] = "FAILED"
+                    item["error"] = (
+                        "Vision provider did not respond for this photo, so no reliable label was produced. "
+                        "Not charged - please retry. "
+                        f"({str(final.metadata.get('vision_error') or 'no detail')[:120]})"
+                    )
+                elif _no_extraction_ratio(crit) >= 0.5:
+                    # Majority of requested fields came back empty ("Not specified"). Do not charge for blanks.
+                    item["status"] = "FAILED"
+                    item["error"] = "No usable labels were extracted for this photo. Not charged - please retry."
                 else:
                     unified = final.metadata.get("unified_output", {}) or {}
                     consensus = unified.get("consensus", {}) or {}
                     overall_conf = float(final.metadata.get("overall_criteria_confidence") or 0.0)
-                    has_anomaly = any(c.get("anomaly", False) for c in crit)
-
-                    if has_anomaly or (overall_conf > 0 and overall_conf < 50.0):
-                        computed_decision = "REJECTED"
-                    elif overall_conf >= 90.0:
-                        computed_decision = "CONFIRMED"
-                    elif overall_conf >= 70.0:
-                        computed_decision = "PARTIAL"
-                    else:
-                        cand_label = consensus.get("label") or "UNKNOWN"
-                        computed_decision = "CONFIRMED" if "UNKNOWN" in cand_label else cand_label
+                    computed_decision, aff_votes = _compute_decision(crit, consensus, overall_conf)
 
                     item["status"] = "COMPLETED"
                     item["criteria_results"] = crit
                     item["overall_confidence"] = overall_conf
                     item["decision"] = computed_decision
-                    item["votes"] = f"{consensus.get('affirmative_votes', 0)}/32"
+                    item["affirmative_votes"] = aff_votes
+                    item["votes"] = f"{aff_votes}/32"
                     item["trace_id"] = final.trace_id
                     item["lineage_hash"] = (final.metadata.get("final_lineage_hash") or "")[:16]
             except Exception as exc:  # noqa: BLE001
@@ -371,6 +430,15 @@ async def image_batch_status(batch_id: str, user: Optional[User] = Depends(get_o
     }
 
 
+def _col_label(name: str) -> str:
+    """Report column label. Price-like fields get a currency note so numbers are never ambiguous.
+    Set REPORT_PRICE_CURRENCY (e.g. PKR) to state the currency; otherwise it is flagged as unspecified."""
+    if re.search(r"price|cost|mrp|amount|rate", name, re.IGNORECASE) and not re.search(r"\(.*\)", name):
+        cur = os.getenv("REPORT_PRICE_CURRENCY", "").strip().upper()
+        return f"{name} ({cur})" if cur else f"{name} (AI estimate, currency not specified)"
+    return name
+
+
 def _rows(s: Dict[str, Any]) -> (List[str], List[Dict[str, Any]]):
     crit_names: List[str] = [c["name"] for c in s["criteria"]]
     rows = []
@@ -395,8 +463,8 @@ def _rows(s: Dict[str, Any]) -> (List[str], List[Dict[str, Any]]):
             if not c:
                 # Loose match fallback
                 c = next((v for k, v in by_norm.items() if (k in norm_n or norm_n in k)), {})
-            row[n] = c.get("value", "")
-            row[f"{n}_Confidence_%"] = c.get("confidence", "")
+            row[_col_label(n)] = c.get("value", "")
+            row[f"{_col_label(n)}_Confidence_%"] = c.get("confidence", "")
         row["Lineage_Hash"] = it.get("lineage_hash", "")
         row["Trace_ID"] = it.get("trace_id", "")
         row["Error"] = it.get("error", "")
@@ -428,6 +496,7 @@ async def image_batch_report(
             "failed": s["failed"],
             "credits_charged": s["credits_charged"],
             "elapsed_seconds": s["elapsed_seconds"],
+            "decision_legend": DECISION_LEGEND,
             "results": [_public_item(i) for i in s["items"]],
         }, indent=2)
         return Response(body, media_type="application/json",
@@ -449,7 +518,7 @@ async def image_batch_report(
         from xml.sax.saxutils import escape as _xml_escape
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
         raise HTTPException(status_code=501, detail="PDF export needs 'reportlab' (pip install reportlab).")
@@ -457,7 +526,16 @@ async def image_batch_report(
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
     st = getSampleStyleSheet()
-    cn = [c["name"] for c in s["criteria"]]
+    head_style = ParagraphStyle("hd", parent=st["BodyText"], fontSize=7, leading=9, textColor=colors.white, wordWrap="CJK")
+    cell_style = ParagraphStyle("cl", parent=st["BodyText"], fontSize=7, leading=9, wordWrap="CJK")
+
+    def _cell(v: Any, limit: int = 120) -> Paragraph:
+        txt = str(v if v is not None else "")
+        if len(txt) > limit:
+            txt = txt[: limit - 3] + "..."
+        return Paragraph(_xml_escape(txt), cell_style)
+
+    cn = [_col_label(c["name"]) for c in s["criteria"]]
     els = [
         Paragraph(f"CypherLabelGuard - Batch Audit Report: {_xml_escape(str(s['name']))}", st["Title"]),
         Paragraph(
@@ -465,19 +543,28 @@ async def image_batch_report(
             f"Photos: <b>{s['total']}</b> &nbsp; Completed: <b>{s['total'] - s['failed']}</b> &nbsp; "
             f"Failed: <b>{s['failed']}</b> &nbsp; Credits: <b>{s['credits_charged']}</b> &nbsp; "
             f"Time: <b>{s['elapsed_seconds']}s</b>", st["Normal"]),
-        Spacer(1, 10),
+        Spacer(1, 6),
+        Paragraph("<b>How to read the Decision column:</b> " + " &nbsp;|&nbsp; ".join(
+            f"<b>{k}</b> = {_xml_escape(v)}" for k, v in DECISION_LEGEND.items()), st["BodyText"]),
+        Spacer(1, 8),
     ]
-    head = ["Photo", "Status", "Conf %"] + cn + ["Lineage"]
-    data = [head]
+    head = ["Photo", "Decision", "Votes", "Conf %"] + cn + ["Lineage"]
+    data = [[Paragraph(_xml_escape(h), head_style) for h in head]]
     for r in rows:
         data.append([
-            Paragraph(_xml_escape(str(r["Photo"])[:40]), st["BodyText"]),
-            r["Status"],
-            str(r["Overall_Confidence_%"]),
-            *[Paragraph(_xml_escape(str(r.get(n, ""))[:40]), st["BodyText"]) for n in cn],
-            r["Lineage_Hash"],
+            _cell(r["Photo"], 40),
+            _cell(r.get("Decision", ""), 16),
+            _cell(r.get("Votes", ""), 8),
+            _cell(r["Overall_Confidence_%"], 8),
+            *[_cell(r.get(n, ""), 110) for n in cn],
+            _cell(r["Lineage_Hash"], 20),
         ])
-    tbl = Table(data, repeatRows=1)
+    # Fixed column widths (A4 landscape usable width ~794pt) so cells never run into each other.
+    fixed = [95, 58, 34, 34, 62]  # Photo, Decision, Votes, Conf %, Lineage
+    usable = 794 - sum(fixed)
+    per_crit = max(55, int(usable / max(1, len(cn))))
+    col_widths = fixed[:4] + [per_crit] * len(cn) + [fixed[4]]
+    tbl = Table(data, colWidths=col_widths, repeatRows=1)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#064e3b")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),

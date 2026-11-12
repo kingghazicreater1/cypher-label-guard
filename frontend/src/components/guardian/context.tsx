@@ -143,7 +143,8 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
           const jobMap = new Map(currentJobs.map((j) => [j.id, j]));
           return dbJobs.map((dbJ) => {
             const existing = jobMap.get(dbJ.id);
-            const resolvedImg = dbJ.imageUrl || existing?.imageUrl || (dbJ.type === 'Image' ? NO_IMAGE_PLACEHOLDER : undefined);
+            const sessionImg = typeof window !== 'undefined' && window.sessionStorage ? sessionStorage.getItem(`avg_img_${dbJ.name}`) : null;
+            const resolvedImg = dbJ.imageUrl || existing?.imageUrl || sessionImg || (dbJ.type === 'Image' ? NO_IMAGE_PLACEHOLDER : undefined);
             const critList = (dbJ.criteria_results && dbJ.criteria_results.length > 0)
               ? dbJ.criteria_results
               : (dbJ.criteria && dbJ.criteria.length > 0 ? dbJ.criteria : (existing?.criteria_results || existing?.criteria || []));
