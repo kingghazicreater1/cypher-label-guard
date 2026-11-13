@@ -1448,8 +1448,8 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
             ccy_note = f" in {price_ccy}" if price_ccy else ""
             if _has_identifiable_product:
                 price_rule = (
-                    f"If an identifiable commercial product or visible price tag is present, provide a realistic estimated retail market price as a single plain number{ccy_note} (never '0'); "
-                    f"if no commercial product is identifiable (e.g., abstract geometric shapes or blank frame) and no price tag is shown, return 'Not specified'"
+                    f"Provide a realistic estimated retail market price as a single plain number{ccy_note} (never '0') for the identified product "
+                    f"(return 'Not specified' ONLY if the frame shows an abstract geometric shape or blank image with no product and no price text)"
                 )
             else:
                 price_rule = "No identifiable retail merchandise or price tag is visible; return 'Not specified' unless a literal printed price appears in visible text"
