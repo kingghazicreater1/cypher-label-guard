@@ -4,7 +4,7 @@
 
 // Configurable per environment (VITE_API_URL); falls back to the local dev backend.
 const ENV_API_URL = (import.meta as any).env?.VITE_API_URL as string | undefined;
-import { getStoredToken } from "./auth-token";
+import { getStoredToken, refreshAuthToken } from "./auth-token";
 
 export const API_BASE_URL = (ENV_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 export const WS_BASE_URL = `${API_BASE_URL.replace(/^http/i, "ws")}/ws/parliament`;
@@ -169,10 +169,9 @@ export interface ProveItDossier {
  * Executes a full 38-feature multi-modal inference pass on the backend.
  */
 export async function runInference(params: InferenceParams): Promise<InferenceResult> {
-  const resp = await fetch(`${API_BASE_URL}/api/v2/infer`, {
+  const resp = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/infer`, {
     method: "POST",
     headers: {
-      ...getAuthHeaders(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -223,9 +222,7 @@ export async function getCriteriaTemplates(): Promise<CriteriaTemplate[]> {
  * Retrieves the complete 1-click forensic Prove-It audit dossier.
  */
 export async function getProveItDossier(traceId: string): Promise<ProveItDossier> {
-  const resp = await fetch(`${API_BASE_URL}/api/v2/prove-it/${traceId}`, {
-    headers: getAuthHeaders(),
-  });
+  const resp = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/prove-it/${traceId}`);
   if (!resp.ok) {
     throw new Error(`Failed to fetch Prove-It dossier for Trace ${traceId}`);
   }
@@ -237,9 +234,8 @@ export async function getProveItDossier(traceId: string): Promise<ProveItDossier
  * Triggers the emergency Feature 21 Panic Salt Flush.
  */
 export async function triggerPanicFlush(reason: string = "User initiated emergency flush"): Promise<any> {
-  const resp = await fetch(`${API_BASE_URL}/api/v2/panic-flush`, {
+  const resp = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/panic-flush`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ reason }),
   });
   if (!resp.ok) {
@@ -261,7 +257,7 @@ export async function getSystemHealth(): Promise<any> {
  * Retrieves the latest parliament consensus and 4x8 grid state.
  */
 export async function getLatestParliamentState(): Promise<any> {
-  const resp = await fetch(`${API_BASE_URL}/api/v2/parliament/latest`, { headers: getAuthHeaders() });
+  const resp = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/parliament/latest`);
   if (!resp.ok) return { success: false };
   return await resp.json();
 }
@@ -419,18 +415,38 @@ export function getAuthHeaders(): Record<string, string> {
   return headers;
 }
 
-export async function getBillingSummary(): Promise<BillingSummary> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/summary`, {
-    headers: getAuthHeaders(),
+/**
+ * Executes an authenticated fetch and transparently force-refreshes the Clerk JWT once on 401.
+ * Prevents long-running batch polling or report downloads from freezing when a short-lived token expires.
+ */
+async function fetchWithAuthRetry(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const incomingHeaders = (init.headers as Record<string, string>) || {};
+  const extraHeaders: Record<string, string> = { ...incomingHeaders };
+  delete extraHeaders["Authorization"];
+
+  const initialHeaders = { ...getAuthHeaders(), ...extraHeaders };
+  const initialAuth = initialHeaders["Authorization"];
+  const res = await fetch(input, { ...init, headers: initialHeaders });
+  if (res.status !== 401) return res;
+
+  const freshToken = await refreshAuthToken(3000, true);
+  if (!freshToken || `Bearer ${freshToken}` === initialAuth) {
+    return res;
+  }
+  return fetch(input, {
+    ...init,
+    headers: { ...getAuthHeaders(), ...extraHeaders },
   });
+}
+
+export async function getBillingSummary(): Promise<BillingSummary> {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/summary`);
   if (!res.ok) throw new Error("Failed to load billing summary");
   return res.json();
 }
 
 export async function getCards(): Promise<CreditCard[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/cards`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/cards`);
   if (!res.ok) throw new Error("Failed to load cards");
   const data = await res.json();
   return data.cards || [];
@@ -444,9 +460,8 @@ export async function addCreditCard(card: {
   cardholder_name: string;
   make_default?: boolean;
 }): Promise<CreditCard> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/cards`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/cards`, {
     method: "POST",
-    headers: getAuthHeaders(),
     body: JSON.stringify(card),
   });
   if (!res.ok) {
@@ -458,25 +473,22 @@ export async function addCreditCard(card: {
 }
 
 export async function deleteCreditCard(cardId: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/cards/${cardId}`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/cards/${cardId}`, {
     method: "DELETE",
-    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error("Failed to delete card");
 }
 
 export async function setDefaultCreditCard(cardId: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/cards/${cardId}/default`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/cards/${cardId}/default`, {
     method: "POST",
-    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error("Failed to set default card");
 }
 
 export async function changeSubscriptionPlan(planName: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/subscription`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/subscription`, {
     method: "POST",
-    headers: getAuthHeaders(),
     body: JSON.stringify({ plan_name: planName }),
   });
   if (!res.ok) {
@@ -487,9 +499,8 @@ export async function changeSubscriptionPlan(planName: string): Promise<any> {
 }
 
 export async function purchaseTokenCredits(amount: number): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/credits/purchase`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/credits/purchase`, {
     method: "POST",
-    headers: getAuthHeaders(),
     body: JSON.stringify({ credit_amount: amount }),
   });
   if (!res.ok) {
@@ -500,9 +511,7 @@ export async function purchaseTokenCredits(amount: number): Promise<any> {
 }
 
 export async function getInvoices(): Promise<InvoiceItem[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/invoices`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/invoices`);
   if (!res.ok) throw new Error("Failed to load invoices");
   const data = await res.json();
   return data.invoices || [];
@@ -567,9 +576,8 @@ export async function submitPaymentProof(data: {
   sender_account?: string;
   notes?: string;
 }): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/submit-proof`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/submit-proof`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   const body = await res.json();
@@ -578,27 +586,22 @@ export async function submitPaymentProof(data: {
 }
 
 export async function getMyPaymentRequests(): Promise<PaymentProofItem[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/my-requests`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/my-requests`);
   if (!res.ok) throw new Error("Failed to load payment requests");
   const data = await res.json();
   return data.requests || [];
 }
 
 export async function getAdminPaymentRequests(): Promise<PaymentProofItem[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/requests`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/admin/requests`);
   if (!res.ok) throw new Error("Failed to load admin payment requests");
   const data = await res.json();
   return data.requests || [];
 }
 
 export async function approvePaymentRequest(requestId: string, adminNotes?: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/approve/${requestId}`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/admin/approve/${requestId}`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ admin_notes: adminNotes }),
   });
   const body = await res.json();
@@ -607,9 +610,8 @@ export async function approvePaymentRequest(requestId: string, adminNotes?: stri
 }
 
 export async function rejectPaymentRequest(requestId: string, adminNotes?: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/admin/reject/${requestId}`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/admin/reject/${requestId}`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ admin_notes: adminNotes }),
   });
   const body = await res.json();
@@ -637,9 +639,7 @@ export interface DashboardAnalyticsResponse {
 export async function getDashboardAnalytics(period = "Today", folder?: string): Promise<DashboardAnalyticsResponse> {
   const params = new URLSearchParams({ period });
   if (folder && folder !== "All") params.append("folder", folder);
-  const res = await fetch(`${API_BASE_URL}/api/v2/history/analytics?${params.toString()}`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/analytics?${params.toString()}`);
   if (!res.ok) throw new Error("Failed to load dashboard analytics");
   return res.json();
 }
@@ -648,7 +648,7 @@ export async function getJobHistory(folder?: string): Promise<any[] & { folders?
   const url = folder && folder !== "All"
     ? `${API_BASE_URL}/api/v2/history/jobs?folder=${encodeURIComponent(folder)}`
     : `${API_BASE_URL}/api/v2/history/jobs`;
-  const res = await fetch(url, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(url);
   if (!res.ok) throw new Error("Failed to load job history");
   const data = await res.json();
   const list: any = data.jobs || [];
@@ -658,7 +658,7 @@ export async function getJobHistory(folder?: string): Promise<any[] & { folders?
 
 export async function getFolders(): Promise<string[]> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v2/history/folders`, { headers: getAuthHeaders() });
+    const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/folders`);
     if (!res.ok) return ["General Workspace"];
     const data = await res.json();
     return data.folders || ["General Workspace"];
@@ -669,9 +669,8 @@ export async function getFolders(): Promise<string[]> {
 
 export async function createFolder(name: string): Promise<string[]> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v2/history/folders`, {
+    const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/folders`, {
       method: "POST",
-      headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
     if (!res.ok) return [name, "General Workspace"];
@@ -684,9 +683,7 @@ export async function createFolder(name: string): Promise<string[]> {
 
 export async function getSingleJob(jobId: string): Promise<any> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v2/history/jobs/${encodeURIComponent(jobId)}`, {
-      headers: getAuthHeaders(),
-    });
+    const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/jobs/${encodeURIComponent(jobId)}`);
     if (!res.ok) return null;
     const data = await res.json();
     return data.job || null;
@@ -696,9 +693,7 @@ export async function getSingleJob(jobId: string): Promise<any> {
 }
 
 export async function getAuditLogs(limit: number = 200): Promise<AuditLogItem[]> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/history/audit-logs?limit=${limit}`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/audit-logs?limit=${limit}`);
   if (!res.ok) throw new Error("Failed to load audit logs");
   const data = await res.json();
   return data.audit_logs || [];
@@ -766,9 +761,8 @@ export async function startBatchJob(params: BatchStartParams): Promise<{
   status: string;
   message: string;
 }> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/start`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/start`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
   if (!res.ok) throw new Error("Failed to start batch job");
@@ -776,14 +770,14 @@ export async function startBatchJob(params: BatchStartParams): Promise<{
 }
 
 export async function getBatchStatus(batchId: string): Promise<BatchStatusResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/status/${batchId}`, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/status/${batchId}`);
   if (!res.ok) throw new ApiHttpError("Failed to get batch status", res.status);
   return res.json();
 }
 
 /** Downloads the labeled CSV with the caller's credentials (the endpoint is no longer public). */
 export async function downloadBatchCsv(batchId: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/download/${batchId}`, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/download/${batchId}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "CSV download failed" }));
     throw new ApiHttpError(typeof err.detail === "string" ? err.detail : "CSV download failed", res.status);
@@ -867,9 +861,8 @@ export async function startImageBatch(params: {
   criteria: CriterionItem[];
   images: { name: string; data: string }[];
 }): Promise<{ batch_id: string; total: number; folder_name: string; concurrency: number; max_credits: number }> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/images/start`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/images/start`, {
     method: "POST",
-    headers: getAuthHeaders(),
     body: JSON.stringify(params),
   });
   if (!res.ok) {
@@ -888,20 +881,16 @@ export async function startImageBatch(params: {
 }
 
 export async function getImageBatchStatus(batchId: string): Promise<ImageBatchStatus> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/images/status/${batchId}`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/images/status/${batchId}`);
   if (!res.ok) throw new ApiHttpError("Failed to get image batch status", res.status);
   return res.json();
 }
 
 export async function downloadImageBatchReport(batchId: string, format: "csv" | "json" | "pdf"): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/batch/images/report/${batchId}?format=${format}`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/images/report/${batchId}?format=${format}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Report download failed" }));
-    throw new Error(typeof err.detail === "string" ? err.detail : "Report download failed");
+    throw new ApiHttpError(typeof err.detail === "string" ? err.detail : "Report download failed", res.status);
   }
   const blob = await res.blob();
   const a = document.createElement("a");
@@ -934,7 +923,7 @@ export interface KeysStatusResponse {
 }
 
 export async function getKeysStatus(): Promise<KeysStatusResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/status`, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/status`);
   if (!res.ok) throw new Error("Failed to load key statuses");
   return res.json();
 }
@@ -953,9 +942,8 @@ export async function updateKeys(keys: {
   openrouter_key?: string;
   openrouter_model?: string;
 }): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/update`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/update`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(keys),
   });
   if (!res.ok) throw new Error("Failed to update API keys");
@@ -966,9 +954,8 @@ export async function testProviderKey(provider: string, apiKey?: string, modelNa
   success: boolean;
   results: Record<string, { status: string; latency_ms?: number; response?: string; error?: string; message?: string; model?: string }>;
 }> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/test`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/test`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ provider, api_key: apiKey, model_name: modelName }),
   });
   if (!res.ok) throw new Error("Failed to execute key test ping");
@@ -997,15 +984,14 @@ export interface KeySlotsResponse {
 }
 
 export async function getKeySlots(): Promise<KeySlotsResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/slots`, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/slots`);
   if (!res.ok) throw new Error("Failed to load key slots");
   return res.json();
 }
 
 export async function updateKeySlot(slotId: string, modelName?: string, apiKey?: string): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/slots/update`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/slots/update`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ slot_id: slotId, model_name: modelName || "", api_key: apiKey || "" }),
   });
   if (!res.ok) {
@@ -1020,9 +1006,8 @@ export async function testKeySlot(slotId: string, modelName?: string, apiKey?: s
   slot_id: string;
   result: { status: string; latency_ms?: number; response?: string; error?: string; model?: string; message?: string };
 }> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/keys/slots/test`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/keys/slots/test`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ slot_id: slotId, model_name: modelName, api_key: apiKey }),
   });
   if (!res.ok) {
@@ -1044,16 +1029,15 @@ export interface CommanderRates {
 }
 
 export async function getCommanderRates(): Promise<CommanderRates> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/rates`, { headers: getAuthHeaders() });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/rates`);
   if (!res.ok) throw new Error("Failed to load commander rates");
   const data = await res.json();
   return data.rates;
 }
 
 export async function updateCommanderRates(rates: CommanderRates): Promise<any> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/billing/rates`, {
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/billing/rates`, {
     method: "POST",
-    headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify(rates),
   });
   if (!res.ok) throw new Error("Failed to update commander rates");
@@ -1063,9 +1047,7 @@ export async function updateCommanderRates(rates: CommanderRates): Promise<any> 
 // Sign-in is handled exclusively by Clerk (see lib/auth-token.ts). The legacy google / phone /
 // password / commander-unlock endpoints no longer exist on the backend.
 export async function getCurrentUserProfile(): Promise<{ success: boolean; user: any; subscription: any; credits_balance: number }> {
-  const res = await fetch(`${API_BASE_URL}/api/v2/auth/me`, {
-    headers: getAuthHeaders(),
-  });
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/auth/me`);
   if (!res.ok) throw new Error("Not authenticated");
   return res.json();
 }

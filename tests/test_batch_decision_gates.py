@@ -51,6 +51,25 @@ class TestDecisionGates(unittest.TestCase):
         decision, _ = bir._compute_decision(crit, {"affirmative_votes": 32}, 95.0)
         self.assertEqual(decision, "REJECTED")
 
+    def test_mid_confidence_never_leaks_domain_label(self):
+        crit = [_crit("name", "Handcrafted soaps", 66.3)]
+        decision, votes = bir._compute_decision(
+            crit, {"affirmative_votes": 32, "label": "E-Commerce & Retail"}, 66.3
+        )
+        self.assertEqual(decision, "PARTIAL")
+        self.assertNotEqual(decision, "E-Commerce & Retail")
+        self.assertEqual(votes, 32)
+
+        low_vote_decision, _ = bir._compute_decision(
+            crit, {"affirmative_votes": 11, "label": "E-Commerce & Retail"}, 58.3
+        )
+        self.assertEqual(low_vote_decision, "HUMAN_REVIEW")
+
+        zero_conf_decision, _ = bir._compute_decision(
+            [_crit("name", "Unknown", 0.0)], {"affirmative_votes": 32, "label": "UNKNOWN"}, 0.0
+        )
+        self.assertEqual(zero_conf_decision, "HUMAN_REVIEW")
+
 
 class TestBlankDetection(unittest.TestCase):
     def test_mostly_blank_photo_is_flagged(self):
@@ -205,6 +224,65 @@ class TestReportExport(unittest.TestCase):
             self.skipTest("reportlab not installed")
         resp = self._get("pdf")
         self.assertTrue(resp.body.startswith(b"%PDF"))
+
+
+class TestCriteriaConcordanceFairness(unittest.TestCase):
+    def setUp(self):
+        from features.cat_a_inference.feat_04_subspace_voting.feature import SubspaceDisagreementVotingFeature
+        self.feat_cls = SubspaceDisagreementVotingFeature
+
+    def test_prose_paraphrases_reach_consensus_even_with_semicolon(self):
+        votes = {
+            "groq": "Vibrant vine tomatoes paired with crisp basil; unbranded produce ready for gourmet cooking.",
+            "gemini": "Fresh vine-ripened red tomatoes and aromatic green basil leaves presented naturally on wood.",
+            "openrouter": "High quality tomatoes on the vine with fragrant basil leaves displayed on a rustic table.",
+        }
+        vals = list(votes.values())
+        self.assertTrue(self.feat_cls._is_generative_prose_criterion(
+            "detail of product in 50 words", "Free Text", vals, True
+        ))
+        chosen, ratio, agree_str, freq = self.feat_cls._compute_prose_concordance(
+            votes, vals, "detail of product in 50 words", 3, {"tomato", "basil"}, True
+        )
+        self.assertEqual(ratio, 1.0)
+        self.assertEqual(freq, 3)
+        self.assertIn("Semantic Prose Consensus", agree_str)
+        self.assertTrue(chosen.endswith("."))
+
+    def test_conflicting_prose_is_never_merged(self):
+        votes = {
+            "groq": "This bottle is badly cracked, broken, and appears counterfeit with damaged label.",
+            "gemini": "A pristine, authentic, undamaged glass bottle in brand-new retail condition.",
+        }
+        vals = list(votes.values())
+        _, ratio, _, freq = self.feat_cls._compute_prose_concordance(
+            votes, vals, "description", 2, {"bottle"}, True
+        )
+        self.assertEqual(freq, 1)
+        self.assertEqual(ratio, 0.5)
+
+    def test_numeric_estimates_and_short_labels(self):
+        res_close = self.feat_cls._compute_numeric_estimate_concordance(
+            ["1200", "1500"], "estimate price", "Range", 2, True
+        )
+        self.assertIsNotNone(res_close)
+        _, ratio_close, _, _ = res_close
+        self.assertGreaterEqual(ratio_close, 0.85)
+
+        res_range = self.feat_cls._compute_numeric_estimate_concordance(
+            ["$5-$10", "0", "$3.00 - $6.00"], "estimate price", "Range", 3, True
+        )
+        self.assertIsNotNone(res_range)
+        _, ratio_range, _, _ = res_range
+        self.assertGreaterEqual(ratio_range, 0.70)
+
+        self.assertIsNone(self.feat_cls._compute_numeric_estimate_concordance(
+            ["10", "1000"], "estimate price", "Range", 2, True
+        ))
+
+        self.assertEqual(self.feat_cls._canonicalize_short_label("Lipstick Set", "Free Text"), "lipstick")
+        self.assertEqual(self.feat_cls._canonicalize_short_label("Lipstick", "Free Text"), "lipstick")
+        self.assertNotEqual(self.feat_cls._canonicalize_short_label("Yes", "Boolean"), "no")
 
 
 if __name__ == "__main__":

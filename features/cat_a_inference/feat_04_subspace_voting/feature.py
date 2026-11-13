@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 from core.base_feature import BaseFeature
 from core.context import ExecutionContext, VoteRecord
+from core.fallback_registry import FallbackRegistry
 
 logger = logging.getLogger("CYPHER_LABEL_GUARD.Feat04")
 
@@ -782,12 +783,17 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                         "max_tokens": 1000,
                         "messages": [{"role": "user", "content": prompt}],
                     }
+                    if "nemotron" in seat_model.lower():
+                        payload["reasoning"] = {"enabled": False}
                     async with acquire_provider_slot("openrouter", timeout=5.0):
                         resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=20.0)
                         if resp.status_code == 200:
-                            raw = resp.json()["choices"][0]["message"]["content"]
+                            msg_obj = resp.json()["choices"][0]["message"]
+                            raw = msg_obj.get("content") or msg_obj.get("reasoning") or ""
                             ballot_data = self._clean_and_parse_json(raw)
                             provider_label = f"OpenRouter ({seat_model})"
+                        else:
+                            logger.warning(f"Parliament seat {api} OpenRouter ({seat_model}) HTTP {resp.status_code}")
 
                 elif groq_key:
                     groq_architectures = {
@@ -801,15 +807,27 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                     payload = {
                         "model": seat_model,
                         "temperature": 0.0,
-                        "max_tokens": 1000,
+                        "max_tokens": 350 if "qwen" in seat_model else 1000,
                         "messages": [{"role": "user", "content": prompt}],
                     }
+                    if "oss" in seat_model:
+                        payload["reasoning_effort"] = "low"
                     async with acquire_provider_slot("groq", timeout=5.0):
                         resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
+                        if resp.status_code == 429 and "qwen" in seat_model:
+                            logger.warning(f"Parliament seat {api} Groq ({seat_model}) hit 429; falling back to openai/gpt-oss-20b.")
+                            seat_model = "openai/gpt-oss-20b"
+                            payload["model"] = seat_model
+                            payload["max_tokens"] = 400
+                            payload["reasoning_effort"] = "low"
+                            resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
                         if resp.status_code == 200:
-                            raw = resp.json()["choices"][0]["message"]["content"]
+                            msg_obj = resp.json()["choices"][0]["message"]
+                            raw = msg_obj.get("content") or msg_obj.get("reasoning") or ""
                             ballot_data = self._clean_and_parse_json(raw)
                             provider_label = f"Groq ({seat_model})"
+                        else:
+                            logger.warning(f"Parliament seat {api} Groq ({seat_model}) HTTP {resp.status_code}")
 
                 elif openrouter_key:
                     openrouter_architectures = {
@@ -831,12 +849,17 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                         "max_tokens": 1000,
                         "messages": [{"role": "user", "content": prompt}],
                     }
+                    if "nemotron" in seat_model.lower():
+                        payload["reasoning"] = {"enabled": False}
                     async with acquire_provider_slot("openrouter", timeout=5.0):
                         resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
                         if resp.status_code == 200:
-                            raw = resp.json()["choices"][0]["message"]["content"]
+                            msg_obj = resp.json()["choices"][0]["message"]
+                            raw = msg_obj.get("content") or msg_obj.get("reasoning") or ""
                             ballot_data = self._clean_and_parse_json(raw)
                             provider_label = f"OpenRouter ({seat_model})"
+                        else:
+                            logger.warning(f"Parliament seat {api} OpenRouter fallback ({seat_model}) HTTP {resp.status_code}")
 
             except Exception:
                 ballot_data = None
@@ -956,10 +979,23 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         mistral_key = os.getenv("MISTRAL_API_KEY")
 
         # Schedule each parliamentary model seat concurrently to execute its distinct architecture
+        ballot_clause = salient_clause
+        vis_primary_meta = str((context.metadata or {}).get("visual_primary_product") or "").strip()
+        context_parts = []
+        if vis_primary_meta:
+            context_parts.append(f"Visual Specimen: {vis_primary_meta}")
+        if criteria and isinstance(criteria, list):
+            heading_names = [str(c.get("name", "")).strip() for c in criteria if c.get("name")]
+            if heading_names:
+                context_parts.append(f"Inspection Criteria: {', '.join(heading_names[:6])}")
+        if context_parts:
+            base_clause = ballot_clause or text
+            ballot_clause = f"{base_clause}\n[{' | '.join(context_parts)}]"
+
         tasks = []
         for api in self.MODELS:
             cal_offset = calibration_scalars.get(api, 1.0)
-            tasks.append(self._evaluate_model_ballot(api, text, salient_clause, cal_offset, None))
+            tasks.append(self._evaluate_model_ballot(api, text, ballot_clause, cal_offset, None))
 
         model_ballots = await asyncio.gather(*tasks)
         all_votes: List[VoteRecord] = [v for ballot in model_ballots for v in ballot]
@@ -1044,6 +1080,217 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
             metadata=metadata,
         )
 
+    _PROSE_STOPWORDS = frozenset({
+        "a", "an", "the", "to", "of", "about", "could", "for", "in", "on", "at", "by", "with", "and",
+        "or", "from", "this", "these", "that", "those", "it", "its", "they", "their", "you", "your",
+        "is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "can", "will",
+        "would", "should", "may", "might", "offer", "offers", "offering", "feature", "features",
+        "featuring", "provide", "provides", "providing", "deliver", "delivers", "delivering", "make",
+        "makes", "making", "include", "includes", "including", "ideal", "perfect", "great", "good",
+        "high", "quality", "product", "item", "experience", "design", "designed", "look", "looking",
+        "use", "used", "using", "daily", "routine", "very", "more", "most", "also", "clean", "shot",
+        "studio", "set", "each", "both", "all",
+    })
+    _PACKAGING_MODIFIERS = frozenset({
+        "set", "pack", "pair", "trio", "kit", "box", "bars", "bar", "bottles", "bottle",
+        "pieces", "piece", "items", "item", "units", "unit", "collection", "bundle",
+    })
+    _NEG_CONDITION_MARKERS = frozenset({
+        "broken", "damaged", "defective", "cracked", "torn", "fake", "counterfeit",
+        "spoiled", "rotten", "moldy", "expired", "unusable", "scratched", "stained",
+    })
+    _POS_CONDITION_MARKERS = frozenset({
+        "pristine", "intact", "fresh", "authentic", "undamaged", "new", "ripe", "clean",
+    })
+
+    @classmethod
+    def _extract_concept_stems(cls, text: str) -> set:
+        core = re.sub(r"\[[A-Z_]+\]", "", str(text or "")).strip().lower()
+        tokens = re.findall(r"\b[a-z0-9]+\b", core)
+        stems = set()
+        for tok in tokens:
+            if tok in cls._PROSE_STOPWORDS or len(tok) < 2:
+                continue
+            stemmed = re.sub(r"(ations|ation|ions|ion|ings|ing|ments|ment|ied|ed|es)$", "", tok)
+            if len(stemmed) > 3 and stemmed.endswith("s") and not stemmed.endswith("ss"):
+                stemmed = stemmed[:-1]
+            if len(stemmed) >= 2:
+                stems.add(stemmed)
+        return stems
+
+    @classmethod
+    def _has_condition_conflict(cls, text_a: str, text_b: str) -> bool:
+        def _polarity(s: str) -> tuple[bool, bool]:
+            low = f" {s.lower()} "
+            neg_hit = False
+            for w in cls._NEG_CONDITION_MARKERS:
+                for m in re.finditer(rf"\b{w}\b", low):
+                    prefix = low[max(0, m.start() - 16):m.start()]
+                    if not re.search(r"\b(no|not|without|zero|free of)\s+$", prefix):
+                        neg_hit = True
+            pos_hit = any(re.search(rf"\b{w}\b", low) for w in cls._POS_CONDITION_MARKERS) or bool(
+                re.search(r"\b(no|without)\s+(visible\s+)?(damage|defect|flaw)", low)
+            )
+            return neg_hit, pos_hit
+
+        neg_a, pos_a = _polarity(str(text_a))
+        neg_b, pos_b = _polarity(str(text_b))
+        return (neg_a and pos_b and not neg_b) or (neg_b and pos_a and not neg_a)
+
+    @classmethod
+    def _canonicalize_short_label(cls, val: Any, c_type: str) -> str:
+        raw = str(val or "").strip()
+        low = re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", raw.lower())).strip()
+        if not low:
+            return raw.lower()
+        if re.search(r"\d", low) or low in {"yes", "no", "true", "false", "high", "low", "medium"} or c_type in ("Boolean", "Scale", "Range"):
+            return low
+        tokens = []
+        for tok in low.split():
+            if tok in cls._PACKAGING_MODIFIERS:
+                continue
+            if len(tok) > 3 and tok.endswith("es") and not tok.endswith("ses"):
+                tok = tok[:-2]
+            elif len(tok) > 3 and tok.endswith("s") and not tok.endswith("ss"):
+                tok = tok[:-1]
+            tokens.append(tok)
+        return " ".join(tokens) if tokens else low
+
+    @classmethod
+    def _is_generative_prose_criterion(
+        cls, name: str, c_type: str, active_values: List[Any], has_substantive: bool
+    ) -> bool:
+        if not has_substantive or c_type != "Free Text" or len(active_values) < 2:
+            return False
+        if any(re.search(r"\[[A-Z_]+\]", str(v)) for v in active_values):
+            return False
+        name_low = (name or "").lower()
+        if re.search(r"\b(list|objects?|every|each|name\s+of|product\s+name|item\s+name|price|cost|budget|weight|count|date|time|role|person|people|formula|entit\w*)\b", name_low):
+            return False
+        # Preserve strict element voting when responses are multi-item semicolon lists of short clauses.
+        if all(";" in str(v) and all(len(p.split()) <= 5 for p in str(v).split(";") if p.strip()) for v in active_values):
+            return False
+        avg_words = sum(len(str(v).split()) for v in active_values) / len(active_values)
+        is_prose_heading = bool(re.search(r"\b(why|desc\w*|detail\w*|summar\w*|overview|benefit\w*|pitch|caption|reason\w*|highlight\w*|sell|recommend\w*|about)\b", name_low))
+        has_semicolons = any(";" in str(v) for v in active_values)
+        if has_semicolons:
+            return is_prose_heading and avg_words >= 8.0
+        return avg_words >= 6.0 or (is_prose_heading and avg_words >= 4.0)
+
+    @classmethod
+    def _compute_numeric_estimate_concordance(
+        cls, active_values: List[Any], name: str, c_type: str, total_voters: int, has_substantive: bool
+    ) -> Optional[tuple]:
+        if not has_substantive or len(active_values) < 2:
+            return None
+        name_low = (name or "").lower()
+        is_price = bool(re.search(r"\b(price|cost|budget|value|worth|estimate)\b", name_low))
+        if c_type not in ("Range", "Scale") and not (
+            is_price or re.search(r"\b(rating|score|amount)\b", name_low)
+        ):
+            return None
+
+        single_pat = re.compile(
+            r"^\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*$",
+            re.IGNORECASE,
+        )
+        range_pat = re.compile(
+            r"^\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*[-–to]+\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:[$€£¥₹₨]|pkr|usd|eur|gbp|rs\.?)?\s*$",
+            re.IGNORECASE,
+        )
+        parsed = []
+        for raw in active_values:
+            raw_s = str(raw).strip()
+            m = single_pat.match(raw_s)
+            if m:
+                val = float(m.group(1).replace(",", ""))
+            else:
+                mr = range_pat.match(raw_s)
+                if not mr:
+                    continue
+                lo = float(mr.group(1).replace(",", ""))
+                hi = float(mr.group(2).replace(",", ""))
+                val = (lo + hi) / 2.0
+            if val > 0:
+                parsed.append((val, raw_s))
+        if len(parsed) < 2:
+            return None
+
+        nums = sorted(v for v, _ in parsed)
+        if nums[0] / nums[-1] < 0.30:
+            return None
+        mid_idx = len(nums) // 2
+        med = nums[mid_idx] if len(nums) % 2 == 1 else (nums[mid_idx - 1] + nums[mid_idx]) / 2.0
+        proximity = sum(min(v, med) / max(v, med) for v in nums) / len(nums)
+        # Do not count '0' abstentions on positive price estimates as affirmative disagreement when >= 2 real prices agree.
+        non_zero_active = [v for v in active_values if not (is_price and single_pat.match(str(v).strip()) and float(single_pat.match(str(v).strip()).group(1).replace(",", "")) == 0.0)]
+        effective_total = max(len(non_zero_active), len(parsed), 2)
+        concordance_ratio = round(min(1.0, proximity * (len(parsed) / effective_total)), 2)
+
+        raw_counts: Dict[str, int] = {}
+        for _, s in parsed:
+            raw_counts[s] = raw_counts.get(s, 0) + 1
+        top_raw, top_cnt = max(raw_counts.items(), key=lambda kv: kv[1])
+        if top_cnt >= 2:
+            chosen_val = top_raw
+        else:
+            all_int = all(abs(v - round(v)) < 1e-6 for v in nums)
+            chosen_val = str(int(round(med))) if all_int else f"{med:.2f}".rstrip("0").rstrip(".")
+
+        freq = len(parsed) if concordance_ratio >= 0.65 else 1
+        agree_str = f"{freq} of {effective_total} APIs concordant ({int(round(concordance_ratio * 100))}% Numeric Estimate Consensus)"
+        return chosen_val, concordance_ratio, agree_str, freq
+
+    @classmethod
+    def _compute_prose_concordance(
+        cls,
+        crit_votes: Dict[str, Any],
+        active_values: List[Any],
+        name: str,
+        total_voters: int,
+        vis_anchors: set,
+        has_visual_metadata: bool,
+    ) -> tuple:
+        is_pitch = bool(re.search(r"\b(why|benefit\w*|reason\w*|pitch|sell|highlight\w*|recommend\w*)\b", (name or "").lower()))
+        active_set = {str(x) for x in active_values}
+        clusters = []
+        for v_id, raw_val in crit_votes.items():
+            text_val = str(raw_val).strip()
+            if text_val not in active_set:
+                continue
+            stems_a = cls._extract_concept_stems(text_val)
+            matched = False
+            for c in clusters:
+                if cls._has_condition_conflict(text_val, c["canonical"]):
+                    continue
+                stems_b = c["stems"]
+                shared = len(stems_a & stems_b)
+                anchor_ok = bool(vis_anchors and (stems_a & vis_anchors) and (stems_b & vis_anchors))
+                min_len = min(len(stems_a), len(stems_b))
+                overlap = (shared / min_len) if min_len > 0 else 0.0
+                pitch_ok = bool(has_visual_metadata and is_pitch and len(text_val.split()) >= 5 and len(c["canonical"].split()) >= 5)
+                if shared >= 1 or anchor_ok or overlap >= 0.35 or pitch_ok:
+                    c["voters"].add(v_id)
+                    c["candidates"].append(text_val)
+                    c["stems"] = c["stems"] | stems_a
+                    matched = True
+                    break
+            if not matched:
+                clusters.append({"canonical": text_val, "voters": {v_id}, "candidates": [text_val], "stems": set(stems_a)})
+
+        if not clusters:
+            return active_values[0], 1.0 / max(1, total_voters), f"1 of {total_voters} APIs concordant", 1
+
+        best = max(clusters, key=lambda c: len(c["voters"]))
+        complete = [s for s in best["candidates"] if s.endswith((".", "!", ")")) and not s.endswith("...")]
+        pool = complete or best["candidates"]
+        chosen_val = max(pool, key=lambda s: (len(s) >= 20, len(s)))
+        freq = len(best["voters"])
+        effective_total = len(active_values)
+        concordance_ratio = round(min(1.0, freq / effective_total), 2)
+        agree_str = f"{freq} of {effective_total} APIs concordant (Semantic Prose Consensus)" if concordance_ratio >= 0.65 else f"{freq} of {effective_total} APIs concordant"
+        return chosen_val, concordance_ratio, agree_str, freq
+
     async def _evaluate_dynamic_criteria(
         self,
         criteria: List[Dict[str, Any]],
@@ -1080,7 +1327,15 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         # Auto-infer edibility if food items detected
         if not vis_edible and (vis_objects or vis_primary):
             all_txt = (" ".join(vis_objects) + " " + vis_primary).lower()
-            if any(f in all_txt for f in ["apple", "bread", "egg", "strawberry", "walnut", "sauce", "bagel", "fruit", "food", "tea", "coffee", "cookie"]):
+            if any(
+                f in all_txt
+                for f in [
+                    "apple", "bread", "egg", "strawberry", "walnut", "sauce", "bagel", "fruit", "food",
+                    "tea", "coffee", "cookie", "tomato", "basil", "grape", "herb", "vegetable", "produce",
+                    "banana", "orange", "lemon", "berry", "salad", "dish", "meal", "drink", "juice",
+                    "milk", "cheese", "chestnut",
+                ]
+            ):
                 vis_edible = True
 
         # Check configured providers and user's desired model names
@@ -1175,7 +1430,29 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         if vision_hints:
             vision_ground_truth_str = "\nVERIFIED MULTIMODAL VISION GROUND TRUTH (Camera / Specimen Ingress):\n" + "\n".join(f"- {h}" for h in vision_hints) + "\n"
 
+        _ABSTRACT_SHAPE_TERMS = (
+            "rectangle", "rectangular shape", "square", "circle", "circular shape",
+            "triangle", "triangular shape", "polygon", "geometric shape",
+            "color block", "color patch", "color swatch", "solid color",
+            "unverified", "no specimen", "unknown", "abstract", "blank",
+        )
+        _has_identifiable_product = bool(
+            (vis_primary and not any(t in vis_primary.lower() for t in _ABSTRACT_SHAPE_TERMS) and not FallbackRegistry.is_fallback(vis_primary)[0])
+            or any(
+                o and not any(t in o.lower() for t in _ABSTRACT_SHAPE_TERMS) and not FallbackRegistry.is_fallback(o)[0]
+                for o in vis_objects
+            )
+        )
         if has_visual_metadata:
+            price_ccy = (os.getenv("REPORT_PRICE_CURRENCY") or "").strip().upper()
+            ccy_note = f" in {price_ccy}" if price_ccy else ""
+            if _has_identifiable_product:
+                price_rule = (
+                    f"If an identifiable commercial product or visible price tag is present, provide a realistic estimated retail market price as a single plain number{ccy_note} (never '0'); "
+                    f"if no commercial product is identifiable (e.g., abstract geometric shapes or blank frame) and no price tag is shown, return 'Not specified'"
+                )
+            else:
+                price_rule = "No identifiable retail merchandise or price tag is visible; return 'Not specified' unless a literal printed price appears in visible text"
             prompt_rules = f"""CRITICAL HEADING INDEPENDENCE & ANTI-OBJECT-DOMINANCE RULES:
 1. STRICT OBJECT DOMINANCE PROHIBITION: Never copy or repeat the primary product name across unrelated headings!
    - For 'Count' / 'Quantity' headings: Return strictly an integer number (e.g. {vis_count}), NEVER the object name.
@@ -1184,6 +1461,8 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
    - For 'Brand' / 'Logo' headings: Return the specific brand or 'Unbranded'.
    - For 'Text' headings: Return the actual visible text or 'None'.
    - For 'Objects' headings: Return the comma-separated list of distinct physical objects.
+   - For 'Price' / 'Estimate price' headings: {price_rule}.
+   - For descriptive prose headings ('why', 'description', 'detail'): Write cohesive natural sentences without semicolons (;).
 2. ACCURATE COUNTING: Use the verified object count ({vis_count}).
 3. Keep your internal reasoning concise (under 25 words)."""
         else:
@@ -1242,7 +1521,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             "model": p_model,
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.0,
-                            "max_tokens": 1000 if "qwen" in p_model else 2000,
+                            "max_tokens": 700 if "qwen" in p_model else 2000,
                         }
                         if "oss" in p_model:
                             payload["reasoning_effort"] = "low"
@@ -1258,6 +1537,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         elif r.status_code == 429:
                             logger.warning(f"Groq API rate limit (429) hit for model {p_model}. Provider slot released.")
                             return p_name, p_model, None
+                        logger.warning(f"Groq criteria query ({p_model}) returned HTTP {r.status_code}")
                         return p_name, p_model, None
 
                     elif p_name == "openrouter":
@@ -1273,6 +1553,8 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             "temperature": 0.0,
                             "max_tokens": 2500,
                         }
+                        if "nemotron" in p_model.lower():
+                            payload["reasoning"] = {"enabled": False}
                         r = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25.0)
                         if r.status_code == 200:
                             msg_obj = r.json()["choices"][0]["message"]
@@ -1285,6 +1567,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         elif r.status_code == 429:
                             logger.warning(f"OpenRouter rate limit (429) hit for {p_model}. Provider slot released.")
                             return p_name, p_model, None
+                        logger.warning(f"OpenRouter criteria query ({p_model}) returned HTTP {r.status_code}")
                         return p_name, p_model, None
 
                     elif p_name == "gemini":
@@ -1412,7 +1695,6 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
 
             if crit_votes:
                 total_voters = len(crit_votes)
-                from core.fallback_registry import FallbackRegistry
 
                 # Separate substantive (non-fallback, non-unverified, non-tautological echo) values
                 def _is_invalid_or_echo(val_item: Any, c_name: str) -> bool:
@@ -1441,7 +1723,24 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                 # If substantive values exist alongside unverified refusals, substantive values take precedence
                 active_values = substantive_values if substantive_values else values
 
+                c_intent = self.classify_heading_intent(name)
+                ABSTRACT_SHAPES = {
+                    "rectangle", "rectangles", "square", "squares", "circle", "circles",
+                    "triangle", "triangles", "polygon", "geometric shapes", "geometric shape",
+                    "shape", "shapes", "color block", "color patch", "color swatch", "color swatches",
+                    "swatch", "swatches", "solid color", "background"
+                }
+                valid_objs = [o for o in vis_objects if o.strip().lower() not in ABSTRACT_SHAPES]
+                valid_primary = vis_primary if (vis_primary and vis_primary.strip().lower() not in ABSTRACT_SHAPES) else ""
+                has_visual_metadata = bool(valid_primary or valid_objs or (vis_meta.get("visual_human_present") is not None))
+                vis_anchors = self._extract_concept_stems(f"{valid_primary} {' '.join(valid_objs)}")
+
                 is_multi_element = any(";" in str(x) for x in active_values)
+                is_comma_attr_list = (
+                    not is_multi_element
+                    and c_intent in ("COLOR", "PER_ITEM_COLORS", "OBJECTS_LIST")
+                    and any(("," in str(x) or " and " in str(x).lower()) for x in active_values)
+                )
                 if len(active_values) == 1:
                     chosen_val = active_values[0]
                     voter_key = next((k for k, v in crit_votes.items() if v == chosen_val), list(crit_votes.keys())[0])
@@ -1451,12 +1750,27 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         agree_str = f"{total_voters} of {total_voters} APIs concordant"
                     freq = total_voters if substantive_values else 1
                     concordance_ratio = 1.0 if substantive_values else (1.0 / total_voters)
-                elif is_multi_element or any(len(str(x).split()) > 4 for x in active_values):
+                elif not is_multi_element and (
+                    numeric_res := self._compute_numeric_estimate_concordance(
+                        active_values, name, c_type, total_voters, bool(substantive_values)
+                    )
+                ) is not None:
+                    chosen_val, concordance_ratio, agree_str, freq = numeric_res
+                elif self._is_generative_prose_criterion(
+                    name, c_type, active_values, bool(substantive_values)
+                ):
+                    chosen_val, concordance_ratio, agree_str, freq = self._compute_prose_concordance(
+                        crit_votes, active_values, name, total_voters, vis_anchors, has_visual_metadata
+                    )
+                elif is_multi_element or is_comma_attr_list or any(len(str(x).split()) > 4 for x in active_values):
                     # Universal Set-Wise Element Democratic Consensus with Semantic Clause Clustered Voting
                     voter_items = {}
                     for v_label, raw_val in crit_votes.items():
                         raw_str = str(raw_val)
-                        parts = [p.strip() for p in raw_str.split(";") if p.strip()]
+                        if is_comma_attr_list and ";" not in raw_str:
+                            parts = [p.strip() for p in re.split(r"[,;]|\band\b", raw_str, flags=re.IGNORECASE) if p.strip()]
+                        else:
+                            parts = [p.strip() for p in raw_str.split(";") if p.strip()]
                         voter_items[v_label] = parts if parts else [raw_str.strip()]
 
                     def _extract_prop_tokens(s: str) -> set:
@@ -1554,8 +1868,9 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         best_c = max(clusters, key=lambda c: len(c["voters"])) if clusters else None
                         if best_c:
                             chosen_val = best_c["canonical"]
-                            concordance_ratio = round(len(best_c["voters"]) / total_voters, 2)
-                            agree_str = f"{len(best_c['voters'])} of {total_voters} APIs concordant"
+                            freq = len(best_c["voters"])
+                            concordance_ratio = round(freq / total_voters, 2)
+                            agree_str = f"{freq} of {total_voters} APIs concordant"
                         else:
                             str_vals = [str(x) for x in active_values]
                             most_common, freq = Counter(str_vals).most_common(1)[0]
@@ -1566,6 +1881,15 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                     str_vals = [str(x) for x in active_values]
                     most_common, freq = Counter(str_vals).most_common(1)[0]
                     chosen_val = active_values[str_vals.index(most_common)]
+                    if freq == 1 and substantive_values:
+                        norm_groups: Dict[str, List[str]] = {}
+                        for raw_s in str_vals:
+                            canon = self._canonicalize_short_label(raw_s, c_type)
+                            norm_groups.setdefault(canon, []).append(raw_s)
+                        best_canon, best_group = max(norm_groups.items(), key=lambda kv: (len(kv[1]), len(kv[0])))
+                        if len(best_group) > freq:
+                            freq = len(best_group)
+                            chosen_val = max(best_group, key=len)
                     effective_total = len(active_values) if substantive_values else total_voters
                     concordance_ratio = freq / effective_total
                     agree_str = f"{freq} of {effective_total} APIs concordant"
@@ -1579,17 +1903,6 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                 is_unverified = str(chosen_val).startswith("[UNVERIFIED") or "[unverified" in str(chosen_val).lower()
                 is_discordant = (not substantive_values and total_voters > 1 and freq <= (total_voters / 2))
                 is_anom = is_container_sig or is_fallback_val or is_unverified
-
-                c_intent = self.classify_heading_intent(name)
-                ABSTRACT_SHAPES = {
-                    "rectangle", "rectangles", "square", "squares", "circle", "circles",
-                    "triangle", "triangles", "polygon", "geometric shapes", "geometric shape",
-                    "shape", "shapes", "color block", "color patch", "color swatch", "color swatches",
-                    "swatch", "swatches", "solid color", "background"
-                }
-                valid_objs = [o for o in vis_objects if o.strip().lower() not in ABSTRACT_SHAPES]
-                valid_primary = vis_primary if (vis_primary and vis_primary.strip().lower() not in ABSTRACT_SHAPES) else ""
-                has_visual_metadata = bool(valid_primary or valid_objs or (vis_meta.get("visual_human_present") is not None))
 
                 # The Parliament Principle: If live AI models provided substantive answers,
                 # trust their collective consensus and do not override chosen_val with hardcoded heuristics!

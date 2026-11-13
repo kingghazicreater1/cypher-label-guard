@@ -62,6 +62,7 @@ import {
   ParliamentFeed,
 } from './common';
 import {
+  ApiHttpError,
   parseCsvBatch,
   getSampleDataset,
   startBatchJob,
@@ -1160,9 +1161,12 @@ export function NewJobScreen() {
   useEffect(() => {
     if (!imgBatchId) return;
     let stopped = false;
+    let inFlight = false;
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 8; // ~16s of transient errors before giving up
     const tick = async () => {
+      if (stopped || inFlight) return;
+      inFlight = true;
       try {
         const s = await getImageBatchStatus(imgBatchId);
         if (stopped) return;
@@ -1177,12 +1181,15 @@ export function NewJobScreen() {
       } catch (err) {
         if (stopped) return;
         consecutiveFailures += 1;
-        // Permanent errors (401/403/404, e.g. server restarted) or too many transient ones stop the loop.
-        if (isPermanentPollError(err) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        // api.ts already force-refreshes expired Clerk JWTs on 401; give 401 one extra tick for session handshakes before stopping.
+        const isHardStop = isPermanentPollError(err) && (!(err instanceof ApiHttpError && err.status === 401) || consecutiveFailures >= 2);
+        if (isHardStop || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           stopped = true;
           clearInterval(timer);
           toast.error('Lost connection to the batch run. Refresh the page to check its final status.');
         }
+      } finally {
+        inFlight = false;
       }
     };
     const timer = setInterval(tick, 2000);
@@ -3787,13 +3794,15 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
     let stopped = false;
     if (isBatch) {
       let consecutiveFailures = 0;
+      let inFlight = false;
       const MAX_CONSECUTIVE_FAILURES = 8;
       const stop = () => {
         stopped = true;
         if (interval) clearInterval(interval);
       };
       const poll = async () => {
-        if (stopped) return;
+        if (stopped || inFlight) return;
+        inFlight = true;
         try {
           const st = await getBatchStatus(jobId);
           if (stopped) return;
@@ -3808,8 +3817,10 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
           }
         } catch (err) {
           consecutiveFailures += 1;
-          // 401/403/404 (e.g. server restarted, registry is in memory) or repeated errors: stop polling.
-          if (isPermanentPollError(err) || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) stop();
+          const isHardStop = isPermanentPollError(err) && (!(err instanceof ApiHttpError && err.status === 401) || consecutiveFailures >= 2);
+          if (isHardStop || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) stop();
+        } finally {
+          inFlight = false;
         }
       };
 

@@ -244,7 +244,7 @@ function ClerkSessionKeeperInner() {
 
   useEffect(() => {
     registerClerkSession(
-      () => getToken(),
+      (opts) => getToken(opts),
       () => signOut(),
     );
     return () => unregisterClerkSession();

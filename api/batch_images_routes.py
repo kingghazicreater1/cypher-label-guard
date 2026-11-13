@@ -123,11 +123,10 @@ def _compute_decision(crit: List[Dict[str, Any]], consensus: Dict[str, Any], ove
         decision = "REJECTED"
     elif overall_conf >= 90.0:
         decision = "CONFIRMED"
-    elif overall_conf >= 70.0:
+    elif overall_conf >= 50.0:
         decision = "PARTIAL"
     else:
-        cand_label = consensus.get("label") or "UNKNOWN"
-        decision = "CONFIRMED" if "UNKNOWN" in cand_label else cand_label
+        decision = "HUMAN_REVIEW"
 
     if decision in ("CONFIRMED", "PARTIAL") and (quorum_missing or aff_votes < 17):
         decision = "HUMAN_REVIEW"

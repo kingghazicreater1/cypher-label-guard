@@ -10,11 +10,12 @@
 const TOKEN_KEY = 'cypher_auth_token';
 const PROFILE_KEY = 'cypher_user_profile';
 
-type TokenGetter = () => Promise<string | null>;
+type TokenGetter = (options?: { skipCache?: boolean }) => Promise<string | null>;
 type SignOutFn = () => Promise<void>;
 
 let memoryToken: string | null = null;
 let inFlight: Promise<string | null> | null = null;
+let inFlightForce = false;
 let lastRefreshAt = 0;
 const MIN_REFRESH_INTERVAL_MS = 5_000;
 
@@ -65,29 +66,39 @@ export function unregisterClerkSession(): void {
  * Concurrent callers (interval, focus and visibility events) share one request, and calls made
  * within a few seconds of a successful refresh reuse the current token.
  */
-export function refreshAuthToken(waitMs = 3000): Promise<string | null> {
+export function refreshAuthToken(waitMs = 3000, force = false): Promise<string | null> {
   if (typeof window === 'undefined') return Promise.resolve(null);
-  if (inFlight) return inFlight;
-  if (memoryToken && Date.now() - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
+  if (inFlight && (!force || inFlightForce)) return inFlight;
+  if (!force && memoryToken && Date.now() - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
     return Promise.resolve(memoryToken);
   }
-  inFlight = (async () => {
+  const priorInFlight = inFlight;
+  const run = async () => {
+    if (priorInFlight) {
+      try { await priorInFlight; } catch { /* ignore */ }
+    }
     if (!tokenGetter) {
       await Promise.race([ready, new Promise<void>((r) => setTimeout(r, waitMs))]);
     }
-    if (!tokenGetter) return getStoredToken();
+    if (!tokenGetter) return force ? null : getStoredToken();
     try {
-      const token = await tokenGetter();
+      const token = await tokenGetter(force ? { skipCache: true } : undefined);
       setStoredToken(token || null);
       if (token) lastRefreshAt = Date.now();
       return token;
     } catch {
-      return getStoredToken();
-    } finally {
-      inFlight = null;
+      return force ? null : getStoredToken();
     }
-  })();
-  return inFlight;
+  };
+  const promise = run().finally(() => {
+    if (inFlight === promise) {
+      inFlight = null;
+      inFlightForce = false;
+    }
+  });
+  inFlight = promise;
+  inFlightForce = force;
+  return promise;
 }
 
 export function clearStoredSession(): void {

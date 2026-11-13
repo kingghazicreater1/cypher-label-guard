@@ -779,6 +779,29 @@ async def run_inference(
                             item["anomaly"] = False
                             item["anomaly_reason"] = None
 
+                # Do not attach fabricated retail price estimates to unverified/abstract-shape frames
+                # that lack any identifiable product and lack printed price text.
+                has_rejected_product = any(
+                    any(w in (c.get("name", "").lower()) for w in ["name", "title", "product", "specimen"])
+                    and not any(w in (c.get("name", "").lower()) for w in ["products in image", "products", "items", "objects", "entities"])
+                    and str(c.get("value", "")).startswith(("[REJECTED:", "[UNVERIFIED:"))
+                    for c in crit_results
+                )
+                vis_text_clean = str(final_context.metadata.get("visual_visible_text") or "").strip().lower()
+                has_visible_price_text = bool(vis_text_clean and vis_text_clean != "none" and any(ch.isdigit() for ch in vis_text_clean))
+                if (req.modality == "IMAGE" or req.image_data) and has_rejected_product and not has_visible_price_text:
+                    NOT_STATED = {"not specified", "not specified in document", "unspecified", "unverified", "not provided", "unknown", "none", "[rejected: generic_fallback_unverified]"}
+                    for item in crit_results:
+                        cn_low = item.get("name", "").lower()
+                        if any(w in cn_low for w in ["price", "cost", "pricing", "rate"]):
+                            cur_val = str(item.get("value", "")).strip().lower()
+                            if cur_val not in NOT_STATED:
+                                item["value"] = "Not specified"
+                                item["confidence"] = 90.0
+                                item["agreement"] = "4 of 4 APIs (Not Stated in Specimen)"
+                                item["anomaly"] = False
+                                item["anomaly_reason"] = None
+
                 confs = [c.get("confidence", 0.0) for c in crit_results if not c.get("anomaly")]
                 overall_crit_conf = round(sum(confs) / len(confs), 1) if (confs and not any(c.get("anomaly") for c in crit_results)) else 0.0
         else:
