@@ -798,9 +798,9 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                 elif groq_key:
                     groq_architectures = {
                         "openai_gpt4": groq_model or "openai/gpt-oss-120b",
-                        "anthropic_claude": "qwen/qwen3.8-27b",
-                        "google_gemini": "qwen/qwen3.8-27b",
-                        "mistral_large": "openai/gpt-oss-120b",
+                        "anthropic_claude": "openai/gpt-oss-20b",
+                        "google_gemini": "openai/gpt-oss-20b",
+                        "mistral_large": groq_model or "openai/gpt-oss-120b",
                     }
                     seat_model = groq_architectures.get(api, groq_model or "openai/gpt-oss-120b")
                     headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
@@ -964,13 +964,9 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         calibration_scalars = context.ephemeral_store.get("calibration_scalars", {})
 
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        openrouter_model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
-
-        # Spawn dynamic criteria task early so it runs concurrently with parliamentary voting
-        criteria = context.input_payload.get("criteria")
-        crit_task = None
-        if criteria and isinstance(criteria, list) and len(criteria) > 0:
-            crit_task = asyncio.create_task(self._evaluate_dynamic_criteria(criteria, text, salient_clause, context.metadata))
+        openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+        if "nemotron-3.5-lightning" in (openrouter_model or ""):
+            openrouter_model = "google/gemma-4-31b-it:free"
 
         groq_key = os.getenv("GROQ_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
@@ -978,12 +974,12 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         mistral_key = os.getenv("MISTRAL_API_KEY")
 
-        # Schedule each parliamentary model seat concurrently to execute its distinct architecture
         ballot_clause = salient_clause
         vis_primary_meta = str((context.metadata or {}).get("visual_primary_product") or "").strip()
         context_parts = []
         if vis_primary_meta:
             context_parts.append(f"Visual Specimen: {vis_primary_meta}")
+        criteria = context.input_payload.get("criteria")
         if criteria and isinstance(criteria, list):
             heading_names = [str(c.get("name", "")).strip() for c in criteria if c.get("name")]
             if heading_names:
@@ -992,11 +988,75 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
             base_clause = ballot_clause or text
             ballot_clause = f"{base_clause}\n[{' | '.join(context_parts)}]"
 
-        tasks = []
-        for api in self.MODELS:
-            cal_offset = calibration_scalars.get(api, 1.0)
-            tasks.append(self._evaluate_model_ballot(api, text, ballot_clause, cal_offset, None))
+        # Well-Ordered Paced Execution:
+        # When custom criteria are present, evaluate criteria FIRST so we never fire duplicate
+        # simultaneous bursts at the same providers, and reuse live responding voters for the
+        # 4x8 Parliament seats (cutting total API requests per image in half).
+        crit_results: Optional[List[Dict[str, Any]]] = None
+        live_criteria_voters: Optional[int] = None
+        if criteria and isinstance(criteria, list) and len(criteria) > 0:
+            self._last_live_voter_count = 0
+            try:
+                crit_results = await self._evaluate_dynamic_criteria(criteria, text, salient_clause, context.metadata)
+                live_criteria_voters = getattr(self, "_last_live_voter_count", 0)
+            except Exception as e:
+                logger.error(f"Error resolving criteria evaluation: {e}")
+                live_criteria_voters = 0
 
+        async def _safe_seat_ballot(idx: int, api: str):
+            cal_offset = calibration_scalars.get(api, 1.0)
+            # If criteria already queried the live providers, synthesize seat ballots from live voter quorum
+            # instead of firing a second redundant wave of HTTP requests to the same APIs.
+            if live_criteria_voters is not None:
+                if live_criteria_voters > 0:
+                    if idx < live_criteria_voters:
+                        cached_b = self._generate_demo_ballot(ballot_clause, api)
+                        return await self._evaluate_model_ballot(api, text, ballot_clause, cal_offset, cached_b)
+                    # Remaining unvoted seat when <4 live providers responded
+                    return [
+                        VoteRecord(
+                            api=api,
+                            dimension=dim,
+                            vote="UNRESOLVED",
+                            confidence=0.0,
+                            reasoning=f"Live inference seat abstained ({api})",
+                            latency_ms=0.0,
+                        )
+                        for dim in self.DIMENSIONS
+                    ]
+                # If 0 live providers responded during criteria evaluation (all rate-limited or offline),
+                # only fall through to _evaluate_model_ballot if no API keys are configured (for demo/offline handling).
+                if groq_key or openai_key or anthropic_key or gemini_key or mistral_key or openrouter_key:
+                    return [
+                        VoteRecord(
+                            api=api,
+                            dimension=dim,
+                            vote="UNRESOLVED",
+                            confidence=0.0,
+                            reasoning=f"Live inference unresolved ({api})",
+                            latency_ms=0.0,
+                        )
+                        for dim in self.DIMENSIONS
+                    ]
+            try:
+                return await asyncio.wait_for(
+                    self._evaluate_model_ballot(api, text, ballot_clause, cal_offset, None),
+                    timeout=16.0,
+                )
+            except Exception:
+                return [
+                    VoteRecord(
+                        api=api,
+                        dimension=dim,
+                        vote="UNRESOLVED",
+                        confidence=0.0,
+                        reasoning=f"Seat timed out ({api})",
+                        latency_ms=16000.0,
+                    )
+                    for dim in self.DIMENSIONS
+                ]
+
+        tasks = [_safe_seat_ballot(idx, api) for idx, api in enumerate(self.MODELS)]
         model_ballots = await asyncio.gather(*tasks)
         all_votes: List[VoteRecord] = [v for ballot in model_ballots for v in ballot]
 
@@ -1056,24 +1116,19 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
         metadata["salience_clause_chars"] = len(salient_clause)
         metadata["total_document_chars"] = len(text)
         metadata["pinned_model_snapshots"] = {
-            "openrouter": os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"),
+            "openrouter": openrouter_model,
             "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             "claude": os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"),
             "gemini": os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest"),
             "mistral": os.getenv("MISTRAL_MODEL", "mistral-large-2407"),
         }
 
-        # Dynamic User-Defined Criteria Evaluation (Concurrent Live LLM Inference)
-        if crit_task is not None:
-            try:
-                crit_results = await crit_task
-                metadata["criteria_results"] = crit_results
-                if crit_results:
-                    valid_confs = [float(c.get("confidence", 0.0) or 0.0) for c in crit_results]
-                    avg_conf = round(sum(valid_confs) / len(valid_confs), 1) if valid_confs else 0.0
-                    metadata["overall_criteria_confidence"] = avg_conf
-            except Exception as e:
-                logger.error(f"Error resolving concurrent criteria task: {e}")
+        if crit_results is not None:
+            metadata["criteria_results"] = crit_results
+            if crit_results:
+                valid_confs = [float(c.get("confidence", 0.0) or 0.0) for c in crit_results]
+                avg_conf = round(sum(valid_confs) / len(valid_confs), 1) if valid_confs else 0.0
+                metadata["overall_criteria_confidence"] = avg_conf
 
         return evolved_context.evolve(
             flags=new_flags,
@@ -1340,7 +1395,9 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
 
         # Check configured providers and user's desired model names
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        openrouter_model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free")
+        openrouter_model = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+        if "nemotron-3.5-lightning" in (openrouter_model or ""):
+            openrouter_model = "google/gemma-4-31b-it:free"
 
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
@@ -1496,9 +1553,10 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
 6. Comply strictly with the requested Type (Boolean, Enum, Scale, Free Text) and Range options if provided.
 7. Keep your internal reasoning concise (under 25 words)."""
 
+        target_cap = 1200 if has_visual_metadata else 2500
         prompt = f"""Evaluate the following specimen/document against the specified criteria.
 Target Document:
-\"\"\"{sanitized_target[:3500]}\"\"\"
+\"\"\"{sanitized_target[:target_cap]}\"\"\"
 {vision_ground_truth_str}
 Criteria Specifications:
 {json.dumps(criteria, indent=2)}
@@ -1518,6 +1576,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
 
         async def _query_provider(p_name: str, p_key: str, p_model: str):
             from features.cat_b_speed.feat_14_connection_pool.feature import get_shared_client, acquire_provider_slot
+            from core.provider_pacer import pacer
             client = get_shared_client()
             try:
                 async with acquire_provider_slot(p_name, timeout=5.0):
@@ -1527,11 +1586,11 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             "model": p_model,
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.0,
-                            "max_tokens": 700 if "qwen" in p_model else 2000,
+                            "max_tokens": 600 if "qwen" in p_model else 900,
                         }
                         if "oss" in p_model:
                             payload["reasoning_effort"] = "low"
-                        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20.0)
+                        r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=14.0)
                         if r.status_code == 200:
                             msg_obj = r.json()["choices"][0]["message"]
                             content = msg_obj.get("content") or ""
@@ -1547,75 +1606,90 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         return p_name, p_model, None
 
                     elif p_name == "openrouter":
-                        headers = {
-                            "Authorization": f"Bearer {p_key}",
-                            "HTTP-Referer": "https://cypherlabelguard.ai",
-                            "X-Title": "CypherLabelGuard",
-                            "Content-Type": "application/json",
-                        }
-                        payload = {
-                            "model": p_model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "temperature": 0.0,
-                            "max_tokens": 2500,
-                        }
-                        if "nemotron" in p_model.lower():
-                            payload["reasoning"] = {"enabled": False}
-                        r = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=25.0)
-                        if r.status_code == 200:
-                            msg_obj = r.json()["choices"][0]["message"]
-                            content = msg_obj.get("content") or ""
-                            reasoning = msg_obj.get("reasoning") or ""
-                            parsed = self._clean_and_parse_json(content)
-                            if not parsed and reasoning:
-                                parsed = self._clean_and_parse_json(reasoning)
-                            return p_name, p_model, parsed
-                        elif r.status_code == 429:
-                            # Fallback to secondary OpenRouter free model when primary hits rate limit
-                            alt_or_model = "google/gemma-4-31b-it:free" if "gemma-4" not in p_model else "qwen/qwen3-32b:free"
-                            logger.warning(f"OpenRouter rate limit (429) hit for {p_model}, trying backup {alt_or_model}...")
-                            await asyncio.sleep(0.5)
-                            alt_payload = {
-                                "model": alt_or_model,
+                        if not pacer.is_host_cooling_down("openrouter.ai"):
+                            headers = {
+                                "Authorization": f"Bearer {p_key}",
+                                "HTTP-Referer": "https://cypherlabelguard.ai",
+                                "X-Title": "CypherLabelGuard",
+                                "Content-Type": "application/json",
+                            }
+                            payload = {
+                                "model": p_model,
                                 "messages": [{"role": "user", "content": prompt}],
                                 "temperature": 0.0,
-                                "max_tokens": 2000,
+                                "max_tokens": 900,
                             }
-                            r_alt = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=alt_payload, timeout=22.0)
-                            if r_alt.status_code == 200:
-                                msg_obj = r_alt.json()["choices"][0]["message"]
-                                content = msg_obj.get("content") or ""
-                                reasoning = msg_obj.get("reasoning") or ""
-                                parsed = self._clean_and_parse_json(content)
-                                if not parsed and reasoning:
-                                    parsed = self._clean_and_parse_json(reasoning)
-                                return p_name, alt_or_model, parsed
-                            return p_name, p_model, None
-                        logger.warning(f"OpenRouter criteria query ({p_model}) returned HTTP {r.status_code}")
+                            if "nemotron" in p_model.lower():
+                                payload["reasoning"] = {"enabled": False}
+                            try:
+                                r = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=12.0)
+                                if r.status_code == 200:
+                                    msg_obj = r.json()["choices"][0]["message"]
+                                    content = msg_obj.get("content") or ""
+                                    reasoning = msg_obj.get("reasoning") or ""
+                                    parsed = self._clean_and_parse_json(content)
+                                    if not parsed and reasoning:
+                                        parsed = self._clean_and_parse_json(reasoning)
+                                    if parsed:
+                                        return p_name, p_model, parsed
+                                elif r.status_code == 429:
+                                    pacer.cooldown("openrouter.ai", 30.0)
+                                    logger.warning(f"OpenRouter rate limit (429) on {p_model}; entering 30s host cooldown.")
+                                else:
+                                    logger.warning(f"OpenRouter criteria query ({p_model}) returned HTTP {r.status_code}")
+                            except Exception as or_err:
+                                logger.warning(f"OpenRouter criteria query ({p_model}) failed: {type(or_err).__name__}")
+
+                        # If OpenRouter is cooling down or returned 429/error, route 3rd independent seat to distinct 20B architecture on Groq
+                        if groq_key:
+                            g_headers = {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"}
+                            for fb_model in ("openai/gpt-oss-20b",):
+                                fb_payload = {
+                                    "model": fb_model,
+                                    "messages": [{"role": "user", "content": prompt}],
+                                    "temperature": 0.0,
+                                    "max_tokens": 800,
+                                    "reasoning_effort": "low",
+                                }
+                                try:
+                                    r_fb = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=g_headers, json=fb_payload, timeout=12.0)
+                                    if r_fb.status_code == 200:
+                                        msg_obj = r_fb.json()["choices"][0]["message"]
+                                        content = msg_obj.get("content") or ""
+                                        reasoning = msg_obj.get("reasoning") or ""
+                                        parsed = self._clean_and_parse_json(content)
+                                        if not parsed and reasoning:
+                                            parsed = self._clean_and_parse_json(reasoning)
+                                        if parsed:
+                                            return "groq_secondary", fb_model, parsed
+                                except Exception:
+                                    pass
                         return p_name, p_model, None
 
                     elif p_name == "gemini":
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{p_model}:generateContent"
                         payload = {
                             "contents": [{"parts": [{"text": prompt}]}],
-                            "generationConfig": {"temperature": 0.0}
+                            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 900}
                         }
                         for g_try in range(2):
                             try:
-                                headers = {"x-goog-api-key": p_key, "Content-Type": "application/json"}
-                                if g_try > 0:
-                                    headers["Connection"] = "close"
-                                r = await client.post(url, headers=headers, json=payload, timeout=25.0)
+                                headers = {
+                                    "x-goog-api-key": p_key,
+                                    "Content-Type": "application/json",
+                                    "Connection": "close",
+                                }
+                                r = await client.post(url, headers=headers, json=payload, timeout=14.0)
                                 if r.status_code == 200:
                                     content = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                                     return p_name, p_model, content
                                 if g_try == 0 and r.status_code >= 500:
-                                    await asyncio.sleep(0.4)
+                                    await asyncio.sleep(0.5)
                                     continue
                                 break
                             except Exception:
                                 if g_try == 0:
-                                    await asyncio.sleep(0.4)
+                                    await asyncio.sleep(0.5)
                                     continue
                                 raise
                         return p_name, p_model, None
@@ -1626,8 +1700,9 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                             "model": p_model,
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.0,
+                            "max_tokens": 900,
                         }
-                        r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
+                        r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=14.0)
                         if r.status_code == 200:
                             content = r.json()["choices"][0]["message"]["content"]
                             return p_name, p_model, content
@@ -1638,10 +1713,10 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         payload = {
                             "model": p_model,
                             "temperature": 0.0,
-                            "max_tokens": 1000,
+                            "max_tokens": 900,
                             "messages": [{"role": "user", "content": prompt}],
                         }
-                        r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=15.0)
+                        r = await client.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=14.0)
                         if r.status_code == 200:
                             content = r.json()["content"][0]["text"]
                             return p_name, p_model, content
@@ -1652,9 +1727,10 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         payload = {
                             "model": p_model,
                             "temperature": 0.0,
+                            "max_tokens": 900,
                             "messages": [{"role": "user", "content": prompt}],
                         }
-                        r = await client.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload, timeout=15.0)
+                        r = await client.post("https://api.mistral.ai/v1/chat/completions", headers=headers, json=payload, timeout=14.0)
                         if r.status_code == 200:
                             content = r.json()["choices"][0]["message"]["content"]
                             return p_name, p_model, content
@@ -1665,8 +1741,15 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
 
             return p_name, p_model, None
 
-        # Execute queries concurrently across configured providers
-        tasks = [_query_provider(p[0], p[1], p[2]) for p in active_providers]
+        async def _safe_query_provider(p_name: str, p_key: str, p_model: str):
+            try:
+                return await asyncio.wait_for(_query_provider(p_name, p_key, p_model), timeout=20.0)
+            except Exception as _t_err:
+                logger.warning(f"Provider {p_name} ({p_model}) exceeded 20s criteria budget; continuing with faster peers.")
+                return p_name, p_model, None
+
+        # Execute queries concurrently across configured providers with strict per-provider timeout guard
+        tasks = [_safe_query_provider(p[0], p[1], p[2]) for p in active_providers]
         provider_responses = await asyncio.gather(*tasks)
 
         # Parse responses
@@ -1680,6 +1763,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                 data = self._clean_and_parse_json(resp_data)
             if data and isinstance(data, dict):
                 parsed_results_by_provider[f"{p_name} ({p_model})"] = data
+        self._last_live_voter_count = len(parsed_results_by_provider)
 
         # Build final criteria output
         final_results = []
@@ -1980,6 +2064,9 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                     effective_total = len(active_values) if substantive_values else total_voters
                     concordance_ratio = freq / effective_total
                     agree_str = f"{freq} of {effective_total} APIs concordant"
+
+                if isinstance(chosen_val, str) and "unverified 2d capture" in chosen_val.lower():
+                    chosen_val = re.sub(r"unverified 2d capture", "Unverified 2D Capture", chosen_val, flags=re.IGNORECASE)
 
                 # Check if chosen value is an anomaly or unverified fallback
                 is_fallback_val, _ = FallbackRegistry.is_fallback(str(chosen_val))

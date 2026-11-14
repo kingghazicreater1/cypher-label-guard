@@ -106,6 +106,19 @@ class TestProviderPacer(unittest.TestCase):
                 return time.monotonic() - t0
         self.assertLess(asyncio.run(run()), 1.0)
 
+    def test_host_cooldown_tracking_and_half_speed_defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PACER_GEMINI_RPM", None)
+            os.environ.pop("PACER_GROQ_RPM", None)
+            os.environ.pop("PACER_OPENROUTER_RPM", None)
+            self.assertEqual(pp._rpm_for("generativelanguage.googleapis.com"), 6)
+            self.assertEqual(pp._rpm_for("api.groq.com"), 12)
+            self.assertEqual(pp._rpm_for("openrouter.ai"), 6)
+        self.assertFalse(pp.pacer.is_host_cooling_down("openrouter.ai"))
+        pp.pacer.cooldown("openrouter.ai", 5.0)
+        self.assertTrue(pp.pacer.is_host_cooling_down("openrouter.ai"))
+        self.assertFalse(pp.pacer.is_host_cooling_down("api.groq.com"))
+
 
 class TestProgressMessageIsTruthful(unittest.TestCase):
     def test_message_makes_no_false_verification_claims(self):

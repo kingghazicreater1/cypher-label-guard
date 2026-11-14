@@ -226,7 +226,7 @@ class VisionConnectorFeature(BaseFeature):
         if img_data:
             str_data = str(img_data).strip()
             # Check if base64 data URI
-            header_match = re.match(r"data:image/(png|jpeg|jpg|webp);base64,(.+)", str_data, re.DOTALL)
+            header_match = re.match(r"data:image/([^;]+);base64,(.+)", str_data, re.DOTALL | re.IGNORECASE)
             if header_match:
                 fmt = header_match.group(1)
                 b64_content = header_match.group(2)
@@ -338,12 +338,12 @@ class VisionConnectorFeature(BaseFeature):
                 img_mime = "image/jpeg"
                 if raw_image_bytes:
                     # High-fidelity zero-retention thumbnailing in RAM (<4ms)
-                    # Drastically cuts transmission payload from ~5MB to ~30KB to eliminate WAN timeouts
+                    # Cuts transmission payload by >50% (512x512 @ q75 -> ~18-28KB) to eliminate WAN/socket timeouts
                     try:
                         with Image.open(io.BytesIO(raw_image_bytes)) as s_img:
-                            s_img.thumbnail((768, 768))
+                            s_img.thumbnail((512, 512))
                             t_buf = io.BytesIO()
-                            s_img.convert("RGB").save(t_buf, format="JPEG", quality=85)
+                            s_img.convert("RGB").save(t_buf, format="JPEG", quality=75)
                             thumb_bytes = t_buf.getvalue()
                             raw_b64_str = base64.b64encode(thumb_bytes).decode("utf-8")
                             img_mime = "image/jpeg"
@@ -373,23 +373,23 @@ class VisionConnectorFeature(BaseFeature):
                     custom_schema_line = (
                         '  "custom_criteria_observations": {\n'
                         + ",\n".join(
-                            f'    {json.dumps(h)}: "Direct visual observation answering this exact heading from the image"'
-                            for h in custom_headings[:12]
+                            f'    {json.dumps(h)}: "Concise 1-2 sentence visual observation (max 35 words) answering this exact heading"'
+                            for h in custom_headings[:10]
                         )
                         + "\n  },\n"
                     )
                     custom_instruction_line = (
-                        f"- USER-REQUESTED INSPECTION HEADINGS: The user specifically requested inspection of these exact headings: {json.dumps(custom_headings)}. "
-                        "Inspect every detail of the frame (foreground, background, secondary props, decorative accents like pinecones or wire frames, textures, materials, exact counts, lighting, and liquid viscosity) to populate 'custom_criteria_observations' accurately, "
-                        "AND ensure every distinct physical object relevant to these headings is included in 'objects' and 'boxes_2d'!\n"
+                        f"- USER-REQUESTED INSPECTION HEADINGS: The user specifically requested inspection of these exact headings: {json.dumps(custom_headings[:10])}. "
+                        "Inspect the frame (foreground, background, secondary props, decorative accents like pinecones or wire frames, textures, materials, exact counts, lighting, and liquid viscosity) to populate 'custom_criteria_observations' accurately (max 35 words per heading), "
+                        "AND ensure distinct physical objects relevant to these headings are included in 'objects' and 'boxes_2d'!\n"
                     )
 
                 v_prompt = (
-                    "Analyze this image carefully. Identify all physical items, entities, and attributes.\n"
+                    "Analyze this image carefully. Identify physical items, entities, and attributes.\n"
                     "Return strictly valid JSON with these exact keys:\n"
                     "{\n"
                     '  "primary_product": "The specific merchandise/equipment/subject (e.g. \'Barcode Scanner\', \'MacBook Laptop\', \'Fresh Strawberry\', \'Watch and Tea Cup\')",\n'
-                    '  "objects": ["specific item 1", "item 2", ...],\n'
+                    '  "objects": ["specific item 1", "item 2"],\n'
                     '  "item_count": 4,\n'
                     '  "boxes_2d": [\n'
                     '     {"box_2d": [100, 200, 500, 600], "label": "specific item 1"}\n'
@@ -400,16 +400,17 @@ class VisionConnectorFeature(BaseFeature):
                     '  "is_edible": true or false,\n'
                     '  "is_living": true or false,\n'
                     '  "brand_or_logo": "Visible brand name or \'Unbranded\'",\n'
-                    '  "visible_text": "Complete transcribed text/numbers anywhere in the frame (e.g. \'PRODUCT REVIEW\', bottle labels, currency text, knife inscriptions), or \'None\'",\n'
+                    '  "visible_text": "Key headline banners, book/product titles, author/brand names (max 200 chars), or \'None\'",\n'
                     '  "damage_or_defect": "Description of any cracks, scratches, flaws, or \'None / Pristine\'",\n'
                     '  "item_colors": "item 1 (colors), item 2 (colors)",\n'
                     '  "background": "Description of background or surface (e.g. \'Vineyard landscape\', \'Wooden table\', \'Dark surface\', \'Peach studio backdrop\')",\n'
                     '  "scene_type": "Real photo / Studio product shot / CGI render / Kitchen / Outdoor"\n'
                     "}\n"
-                    "CRITICAL INSTRUCTIONS:\n"
+                    "CRITICAL INSTRUCTIONS & OUTPUT LIMITS:\n"
                     + custom_instruction_line +
-                    "- boxes_2d (Spatial Grounding): Locate EVERY physical object/merchandise in the frame (including decorative items, props, containers, and main subjects). Return normalized integer coordinates 0 to 1000 representing [ymin, xmin, ymax, xmax].\n"
-                    "- visible_text (OCR): Read and transcribe ALL visible text, especially large headline banners (e.g. 'PRODUCT REVIEW'), titles, logos, and labels. Do NOT miss headline text!\n"
+                    "- boxes_2d (Spatial Grounding - MAX 8 BOXES): Locate up to 8 main distinct physical objects/merchandise in the frame (including key decorative items, props, containers, and main subjects). Do NOT create boxes for individual letters, words, or minor graphic prints on book covers. Return normalized integer coordinates 0 to 1000 representing [ymin, xmin, ymax, xmax].\n"
+                    "- objects (MAX 10 ITEMS): List up to 10 distinct physical items in the frame.\n"
+                    "- visible_text (OCR - MAX 200 CHARS): Transcribe key headline banners (e.g. 'PRODUCT REVIEW'), book/product titles, author names, and logos up to 200 characters total. Do NOT transcribe long body paragraphs or fine print!\n"
                     "- item_count: Count the TOTAL individual items, pieces, or distinct units (e.g. if a makeup palette has 9-54 pans/shades of eye shadow, count individual pans; if 12 eggs, count 12; if 3 bottles, count 3; if 1 strawberry and 2 forks, count 3).\n"
                     "- background: Clearly describe the surface or background material (e.g. 'Vineyard landscape', 'Wooden table', 'Dark surface', 'Peach backdrop'). NEVER say 'No human' for background!\n"
                     "- human_present: true ONLY if an actual real living human person (or real human hands/face/body) is present. Return false for toy figurines, Lego minifigures, statues, dolls, mannequins, cartoon characters, drawings, or illustrations! (e.g. A Lego minifigure is a toy, NOT human presence).\n"
@@ -420,62 +421,68 @@ class VisionConnectorFeature(BaseFeature):
                 raw_reply = ""
                 used_model = "vision"
 
-                # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable with Stale-Socket Retry)
+                # 1. Primary: Google Gemini Direct API (Bounded 2-attempt budget <35s, fresh socket, capped output tokens)
                 if gemini_key and raw_b64_str:
                     preferred_g = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
                     g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-flash-latest"]
                     seen_g = set()
                     g_models = [m for m in g_models if m and not (m in seen_g or seen_g.add(m))][:2]
-                    for g_model_name in g_models:
+                    if len(g_models) == 1:
+                        g_models = [g_models[0], g_models[0]]
+                    for attempt_idx, g_model_name in enumerate(g_models):
                         if parsed:
                             break
-                        for attempt_idx in range(2):
-                            try:
-                                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model_name}:generateContent"
-                                g_headers = {"x-goog-api-key": gemini_key, "Content-Type": "application/json"}
-                                if attempt_idx > 0:
-                                    # Force a brand-new TCP socket if the pooled keep-alive connection was closed by upstream
-                                    g_headers["Connection"] = "close"
-                                g_payload = {
-                                    "contents": [
-                                        {
-                                            "parts": [
-                                                {"text": v_prompt},
-                                                {"inline_data": {"mime_type": img_mime, "data": raw_b64_str}},
-                                            ]
-                                        }
-                                    ],
-                                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
-                                }
-                                g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=22.0)
-                                vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
-                                if g_resp.status_code == 200:
-                                    g_data = g_resp.json()
-                                    raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                                    clean_json = raw_reply
-                                    if "```json" in clean_json:
-                                        clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
-                                    elif "```" in clean_json:
-                                        clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
-                                    if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
-                                        clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
-                                    parsed = json.loads(clean_json)
-                                    used_model = g_model_name
-                                    break
-                                if g_resp.status_code == 404:
-                                    break
-                                if attempt_idx == 0:
-                                    await asyncio.sleep(0.4)
-                            except Exception as g_err:
-                                vision_error_note = f"{g_model_name} (attempt {attempt_idx + 1}): {type(g_err).__name__} {str(g_err)[:80]}"
-                                _log.warning("Gemini vision model %s attempt %d failed: %s", g_model_name, attempt_idx + 1, vision_error_note)
-                                if attempt_idx == 0:
-                                    await asyncio.sleep(0.4)
+                        try:
+                            g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model_name}:generateContent"
+                            # Always use Connection: close on heavy multipart/base64 vision calls to prevent stale keep-alive socket disconnects
+                            g_headers = {
+                                "x-goog-api-key": gemini_key,
+                                "Content-Type": "application/json",
+                                "Connection": "close",
+                            }
+                            g_payload = {
+                                "contents": [
+                                    {
+                                        "parts": [
+                                            {"text": v_prompt},
+                                            {"inline_data": {"mime_type": img_mime, "data": raw_b64_str}},
+                                        ]
+                                    }
+                                ],
+                                "generationConfig": {
+                                    "temperature": 0.0,
+                                    "maxOutputTokens": 750,
+                                    "responseMimeType": "application/json",
+                                },
+                            }
+                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=16.0)
+                            vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
+                            if g_resp.status_code == 200:
+                                g_data = g_resp.json()
+                                raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                clean_json = raw_reply
+                                if "```json" in clean_json:
+                                    clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                                elif "```" in clean_json:
+                                    clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                                if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
+                                    clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
+                                parsed = json.loads(clean_json)
+                                used_model = g_model_name
+                                break
+                            if attempt_idx == 0:
+                                await asyncio.sleep(1.0)
+                        except Exception as g_err:
+                            vision_error_note = f"{g_model_name} (attempt {attempt_idx + 1}): {type(g_err).__name__} {str(g_err)[:80]}"
+                            _log.warning("Gemini vision model %s attempt %d failed: %s", g_model_name, attempt_idx + 1, vision_error_note)
+                            if attempt_idx == 0:
+                                await asyncio.sleep(1.0)
 
-                # 2. Secondary: OpenRouter (gemma-4-31b-it:free) or OpenAI
+                # 2. Secondary: OpenRouter (gemma-4-31b-it:free) or OpenAI (skipped if OpenRouter is cooling down from 429)
                 if not parsed and img_url_to_send:
+                    from core.provider_pacer import pacer
                     sec_candidates = []
-                    if openrouter_key:
+                    if openrouter_key and not pacer.is_host_cooling_down("openrouter.ai"):
                         sec_candidates.append((
                             "https://openrouter.ai/api/v1/chat/completions",
                             {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
@@ -500,11 +507,11 @@ class VisionConnectorFeature(BaseFeature):
                                     ]
                                 }
                             ],
-                            "max_tokens": 900,
+                            "max_tokens": 700,
                             "temperature": 0.0,
                         }
                         try:
-                            sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=18.0)
+                            sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=12.0)
                             if sec_resp.status_code == 200:
                                 sec_data = sec_resp.json()
                                 raw_reply = sec_data["choices"][0]["message"]["content"].strip()
@@ -528,7 +535,7 @@ class VisionConnectorFeature(BaseFeature):
                 if parsed and isinstance(parsed, dict):
                     ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
                     if parsed.get("objects"):
-                        raw_objs = parsed["objects"]
+                        raw_objs = parsed["objects"][:10]
                         norm_objs = []
                         for o in raw_objs:
                             if isinstance(o, dict):
@@ -563,7 +570,7 @@ class VisionConnectorFeature(BaseFeature):
                         else:
                             primary_product_name = p_cand
                     if parsed.get("item_colors"):
-                        item_colors_desc = parsed["item_colors"]
+                        item_colors_desc = str(parsed["item_colors"])[:250]
                     if parsed.get("item_count") is not None:
                         try:
                             item_count_val = int(parsed["item_count"])
@@ -573,26 +580,26 @@ class VisionConnectorFeature(BaseFeature):
                         item_count_val = len(detected_objects) if detected_objects else 1
                     
                     human_present_val = bool(parsed.get("human_present"))
-                    human_details_val = str(parsed.get("human_details") or "None")
+                    human_details_val = str(parsed.get("human_details") or "None")[:150]
                     is_edible_val = bool(parsed.get("is_edible"))
                     is_living_val = bool(parsed.get("is_living"))
-                    damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")
-                    brand_val = str(parsed.get("brand_or_logo") or "Unbranded")
-                    visible_text_val = str(parsed.get("visible_text") or "None")
-                    background_val = str(parsed.get("background") or "Standard")
-                    scene_type_val = str(parsed.get("scene_type") or "Product Image")
+                    damage_defect_val = str(parsed.get("damage_or_defect") or "None / Pristine")[:200]
+                    brand_val = str(parsed.get("brand_or_logo") or "Unbranded")[:120]
+                    visible_text_val = str(parsed.get("visible_text") or "None")[:250]
+                    background_val = str(parsed.get("background") or "Standard")[:180]
+                    scene_type_val = str(parsed.get("scene_type") or "Product Image")[:100]
 
                     if isinstance(parsed.get("custom_criteria_observations"), dict):
                         custom_obs_dict = {
-                            str(k).strip(): str(v).strip()
-                            for k, v in parsed["custom_criteria_observations"].items()
+                            str(k).strip(): str(v).strip()[:300]
+                            for k, v in list(parsed["custom_criteria_observations"].items())[:10]
                             if k and v and str(v).strip()
                         }
 
-                    # Parse Native 2D Spatial Grounding Boxes from Gemini / Multimodal Vision
+                    # Parse Native 2D Spatial Grounding Boxes from Gemini / Multimodal Vision (capped at 8 main objects)
                     gemini_boxes = []
                     if parsed.get("boxes_2d") and isinstance(parsed["boxes_2d"], list):
-                        for b_item in parsed["boxes_2d"]:
+                        for b_item in parsed["boxes_2d"][:8]:
                             if isinstance(b_item, dict):
                                 coords = b_item.get("box_2d") or b_item.get("box") or b_item.get("bbox")
                                 if isinstance(coords, (list, tuple)) and len(coords) == 4:
@@ -627,7 +634,11 @@ class VisionConnectorFeature(BaseFeature):
                             if float(b.get("confidence", 0.0)) >= 65.0 and str(b.get("label", "")).lower() in det_low
                         ]
 
-                    visual_summary = f"Verified Vision Analysis ({used_model}): {raw_reply}"
+                    visual_summary = (
+                        f"Verified Vision Analysis ({used_model}): Primary={primary_product_name or 'N/A'}, "
+                        f"Objects={', '.join(detected_objects[:8])}, Count={item_count_val}, "
+                        f"Colors={item_colors_desc or dominant_color}, Text={visible_text_val[:120]}"
+                    )
                     vision_api_ok = True
             except Exception as e:
                 vision_error_note = f"{type(e).__name__} {str(e)[:80]}"

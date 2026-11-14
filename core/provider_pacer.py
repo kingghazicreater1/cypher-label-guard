@@ -12,10 +12,10 @@
 #
 # Config (env):
 #   PROVIDER_TIER=free|paid     default free. "paid" disables pacing entirely.
-#   PACER_GEMINI_RPM            default 12  (Gemini free limit is 15)
-#   PACER_GROQ_RPM              default 25  (Groq free limit is 30)
-#   PACER_OPENROUTER_RPM        default 16  (OpenRouter free limit is 20)
-#   PACER_MAX_429_RETRIES       default 2
+#   PACER_GEMINI_RPM            default 6   (half-speed safe margin; Gemini free limit is 15)
+#   PACER_GROQ_RPM              default 12  (half-speed safe margin; Groq free limit is 30)
+#   PACER_OPENROUTER_RPM        default 6   (half-speed safe margin; OpenRouter free limit is 20)
+#   PACER_MAX_429_RETRIES       default 1
 #   PACER_DAILY_WARN_GEMINI     default 1400 (free limit 1,500/day)
 # ==============================================================================
 
@@ -35,9 +35,9 @@ pacing_active: ContextVar[bool] = ContextVar("pacing_active", default=False)
 
 # host -> (env var name, default requests/minute)
 _HOST_LIMITS = {
-    "generativelanguage.googleapis.com": ("PACER_GEMINI_RPM", 12),
-    "api.groq.com": ("PACER_GROQ_RPM", 25),
-    "openrouter.ai": ("PACER_OPENROUTER_RPM", 16),
+    "generativelanguage.googleapis.com": ("PACER_GEMINI_RPM", 6),
+    "api.groq.com": ("PACER_GROQ_RPM", 12),
+    "openrouter.ai": ("PACER_OPENROUTER_RPM", 6),
 }
 
 
@@ -59,6 +59,7 @@ def _rpm_for(host: str) -> int:
 class ProviderPacer:
     def __init__(self) -> None:
         self._next_slot: Dict[str, float] = {}
+        self._host_cooldown_until: Dict[str, float] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
         self._day: str = ""
         self._daily: Dict[str, int] = {}
@@ -98,8 +99,14 @@ class ProviderPacer:
         """After a 429, push the whole host's schedule back so every waiter slows down."""
         until = time.monotonic() + seconds
         self._next_slot[host] = max(self._next_slot.get(host, 0.0), until)
+        self._host_cooldown_until[host] = max(self._host_cooldown_until.get(host, 0.0), until)
         self.cooldown_until = max(self.cooldown_until, until)
         self.rate_limit_hits += 1
+
+    def is_host_cooling_down(self, host: str) -> bool:
+        if self.cooldown_until <= 0.0:
+            return False
+        return time.monotonic() < self._host_cooldown_until.get(host, 0.0)
 
     def in_cooldown(self) -> bool:
         return time.monotonic() < self.cooldown_until
@@ -121,9 +128,9 @@ _orig_send = httpx.AsyncClient.send
 def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
     raw = resp.headers.get("retry-after", "")
     try:
-        return min(60.0, max(1.0, float(raw)))
+        return min(12.0, max(1.0, float(raw)))
     except ValueError:
-        return min(60.0, 10.0 * (2 ** attempt))
+        return min(8.0, 4.0 * (2 ** attempt))
 
 
 async def _paced_send(self, request, *args, **kwargs):
@@ -131,12 +138,17 @@ async def _paced_send(self, request, *args, **kwargs):
         return await _orig_send(self, request, *args, **kwargs)
 
     host = request.url.host
-    max_retries = int(os.getenv("PACER_MAX_429_RETRIES", "2"))
+    max_retries = int(os.getenv("PACER_MAX_429_RETRIES", "1"))
     resp: Optional[httpx.Response] = None
     for attempt in range(max_retries + 1):
         await pacer.acquire(host)
         resp = await _orig_send(self, request, *args, **kwargs)
-        if resp.status_code != 429 or attempt == max_retries:
+        if resp.status_code != 429:
+            return resp
+        if attempt == max_retries:
+            until = time.monotonic() + 20.0
+            pacer._host_cooldown_until[host] = max(pacer._host_cooldown_until.get(host, 0.0), until)
+            pacer.cooldown_until = max(pacer.cooldown_until, until)
             return resp
         delay = _retry_after_seconds(resp, attempt)
         logger.warning("429 from %s - cooling down %.0fs (retry %d/%d)", host, delay, attempt + 1, max_retries)

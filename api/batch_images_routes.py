@@ -243,6 +243,10 @@ async def _run_batch(batch_id: str, user_id: str, user_email: str, depth: str, c
                 if item["status"] == "FAILED":
                     state["failed"] += 1
                 state["progress_pct"] = round(state["done"] / state["total"] * 100.0, 1)
+                if state.get("paced") and state["done"] < state["total"]:
+                    inter_delay = max(0.0, float(os.getenv("BATCH_INTER_IMAGE_DELAY_SEC", "1.5")))
+                    if inter_delay > 0:
+                        await asyncio.sleep(inter_delay)
 
     await asyncio.gather(*[_one(it) for it in state["items"]])
 
