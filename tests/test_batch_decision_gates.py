@@ -417,6 +417,15 @@ class TestCatalogExportAndAliases(unittest.TestCase):
             db.close()
             engine.dispose()
 
+    def test_short_phrase_subset_concordance_merges_silver_metal_spoon(self):
+        from features.cat_a_inference.feat_04_subspace_voting.feature import SubspaceDisagreementVotingFeature
+        # Verify concept stem extraction and subset clustering for "Silver metal spoon", "Silver", "Silver metal"
+        stems_1 = SubspaceDisagreementVotingFeature._extract_concept_stems("Silver metal spoon")
+        stems_2 = SubspaceDisagreementVotingFeature._extract_concept_stems("Silver")
+        stems_3 = SubspaceDisagreementVotingFeature._extract_concept_stems("Silver metal")
+        self.assertTrue(stems_2 <= stems_3 <= stems_1)
+        self.assertEqual(stems_2, {"silver"})
+
 
 if __name__ == "__main__":
     unittest.main()

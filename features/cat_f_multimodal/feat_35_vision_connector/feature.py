@@ -258,14 +258,18 @@ class VisionConnectorFeature(BaseFeature):
                 from features.cat_f_multimodal.feat_35_vision_connector.local_yolo import detect_with_local_yolo
                 yolo_res = detect_with_local_yolo(raw_image_bytes)
                 if yolo_res and yolo_res.get("success") and yolo_res.get("objects"):
-                    detected_objects = yolo_res["objects"]
-                    primary_product_name = yolo_res["primary_product"]
-                    item_count_val = yolo_res["item_count"]
-                    human_present_val = yolo_res["human_present"]
-                    human_details_val = yolo_res["human_details"]
-                    is_edible_val = yolo_res["is_edible"]
-                    yolo_boxes = yolo_res.get("boxes", [])
-                    visual_attributes.append(f"Local YOLO ({yolo_res.get('latency_ms', 0)}ms): {', '.join(detected_objects)} (Count: {item_count_val})")
+                    raw_yolo_boxes = yolo_res.get("boxes", [])
+                    # Filter out low-confidence (< 42%) COCO guesses (e.g., 26% 'Potted Plant' on decorative arrangements)
+                    reliable_boxes = [b for b in raw_yolo_boxes if float(b.get("confidence", 0.0)) >= 42.0]
+                    if reliable_boxes:
+                        yolo_boxes = reliable_boxes
+                        detected_objects = [str(b.get("label", "")).strip() for b in reliable_boxes if b.get("label")]
+                        primary_product_name = detected_objects[0] if detected_objects else yolo_res["primary_product"]
+                        item_count_val = len(detected_objects)
+                        human_present_val = any(o.lower() == "person" for o in detected_objects)
+                        human_details_val = "Person detected via local visual model" if human_present_val else "None"
+                        is_edible_val = yolo_res["is_edible"]
+                        visual_attributes.append(f"Local YOLO ({yolo_res.get('latency_ms', 0)}ms): {', '.join(detected_objects)} (Count: {item_count_val})")
             except Exception as _exc:
                 _log.debug("Non-fatal error suppressed: %s", type(_exc).__name__)
 
@@ -309,16 +313,18 @@ class VisionConnectorFeature(BaseFeature):
             f"Geometric bounds verified, zero digital corruption."
         )
 
-        # 4. Real Multimodal Vision API (Gemini Direct / OpenRouter / OpenAI)
+        # 4. Real Multimodal Vision API (Gemini Direct / Groq Vision / OpenRouter / OpenAI)
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        groq_key = os.getenv("GROQ_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
         primary_product_name = None
         item_colors_desc = None
+        custom_obs_dict: Dict[str, Any] = {}
         vision_api_attempted = False
         vision_api_ok = False
         vision_error_note = ""
-        if (img_data or raw_image_bytes) and (gemini_key or openrouter_key or openai_key):
+        if (img_data or raw_image_bytes) and (gemini_key or groq_key or openrouter_key or openai_key):
             try:
                 import httpx
                 import json
@@ -354,6 +360,29 @@ class VisionConnectorFeature(BaseFeature):
                 else:
                     img_url_to_send = None
 
+                raw_criteria = current_payload.get("criteria") or context.metadata.get("criteria") or []
+                custom_headings = [
+                    str(c.get("name", "")).strip()
+                    for c in raw_criteria
+                    if isinstance(c, dict) and str(c.get("name", "")).strip()
+                ]
+                custom_schema_line = ""
+                custom_instruction_line = ""
+                if custom_headings:
+                    custom_schema_line = (
+                        '  "custom_criteria_observations": {\n'
+                        + ",\n".join(
+                            f'    {json.dumps(h)}: "Direct visual observation answering this exact heading from the image"'
+                            for h in custom_headings[:12]
+                        )
+                        + "\n  },\n"
+                    )
+                    custom_instruction_line = (
+                        f"- USER-REQUESTED INSPECTION HEADINGS: The user specifically requested inspection of these exact headings: {json.dumps(custom_headings)}. "
+                        "Inspect every detail of the frame (foreground, background, secondary props, decorative accents like pinecones or wire frames, textures, materials, exact counts, lighting, and liquid viscosity) to populate 'custom_criteria_observations' accurately, "
+                        "AND ensure every distinct physical object relevant to these headings is included in 'objects' and 'boxes_2d'!\n"
+                    )
+
                 v_prompt = (
                     "Analyze this image carefully. Identify all physical items, entities, and attributes.\n"
                     "Return strictly valid JSON with these exact keys:\n"
@@ -364,6 +393,7 @@ class VisionConnectorFeature(BaseFeature):
                     '  "boxes_2d": [\n'
                     '     {"box_2d": [100, 200, 500, 600], "label": "specific item 1"}\n'
                     '  ],\n'
+                    + custom_schema_line +
                     '  "human_present": true or false,\n'
                     '  "human_details": "Description of person/hand/face if present, else \'None\'",\n'
                     '  "is_edible": true or false,\n'
@@ -376,7 +406,8 @@ class VisionConnectorFeature(BaseFeature):
                     '  "scene_type": "Real photo / Studio product shot / CGI render / Kitchen / Outdoor"\n'
                     "}\n"
                     "CRITICAL INSTRUCTIONS:\n"
-                    "- boxes_2d (Spatial Grounding): Locate EVERY physical object/merchandise in the frame. Return normalized integer coordinates 0 to 1000 representing [ymin, xmin, ymax, xmax].\n"
+                    + custom_instruction_line +
+                    "- boxes_2d (Spatial Grounding): Locate EVERY physical object/merchandise in the frame (including decorative items, props, containers, and main subjects). Return normalized integer coordinates 0 to 1000 representing [ymin, xmin, ymax, xmax].\n"
                     "- visible_text (OCR): Read and transcribe ALL visible text, especially large headline banners (e.g. 'PRODUCT REVIEW'), titles, logos, and labels. Do NOT miss headline text!\n"
                     "- item_count: Count the TOTAL individual items, pieces, or distinct units (e.g. if a makeup palette has 9-54 pans/shades of eye shadow, count individual pans; if 12 eggs, count 12; if 3 bottles, count 3; if 1 strawberry and 2 forks, count 3).\n"
                     "- background: Clearly describe the surface or background material (e.g. 'Vineyard landscape', 'Wooden table', 'Dark surface', 'Peach backdrop'). NEVER say 'No human' for background!\n"
@@ -391,7 +422,7 @@ class VisionConnectorFeature(BaseFeature):
                 # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable)
                 if gemini_key and raw_b64_str:
                     preferred_g = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
-                    g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
+                    g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
                     # Deduplicate and bound attempts so retries + secondary fit inside Standard 75s budget
                     seen_g = set()
                     g_models = [m for m in g_models if m and not (m in seen_g or seen_g.add(m))][:3]
@@ -410,7 +441,7 @@ class VisionConnectorFeature(BaseFeature):
                                 ],
                                 "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
                             }
-                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=18.0)
+                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=20.0)
                             vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
                             if g_resp.status_code == 200:
                                 g_data = g_resp.json()
@@ -429,48 +460,64 @@ class VisionConnectorFeature(BaseFeature):
                             vision_error_note = f"{g_model_name}: {type(g_err).__name__} {str(g_err)[:80]}"
                             _log.warning("Gemini vision model %s failed, trying next: %s", g_model_name, vision_error_note)
 
-                # 2. Secondary: OpenRouter or OpenAI
-                if not parsed and (openrouter_key or openai_key) and img_url_to_send:
+                # 2. Secondary: Groq Multimodal Vision (Llama-4-Scout) or OpenRouter or OpenAI
+                if not parsed and img_url_to_send:
+                    sec_candidates = []
+                    if groq_key:
+                        sec_candidates.append((
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                            "meta-llama/llama-4-scout-17b-16e-instruct",
+                        ))
                     if openrouter_key:
-                        sec_url = "https://openrouter.ai/api/v1/chat/completions"
-                        sec_headers = {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"}
-                        sec_model = "google/gemma-4-31b-it:free"
-                    else:
-                        sec_url = "https://api.openai.com/v1/chat/completions"
-                        sec_headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
-                        sec_model = "gpt-4o-mini"
+                        sec_candidates.append((
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
+                            "google/gemma-3-27b-it:free",
+                        ))
+                    if openai_key:
+                        sec_candidates.append((
+                            "https://api.openai.com/v1/chat/completions",
+                            {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                            "gpt-4o-mini",
+                        ))
 
-                    sec_payload = {
-                        "model": sec_model,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": v_prompt},
-                                    {"type": "image_url", "image_url": {"url": img_url_to_send}},
-                                ]
-                            }
-                        ],
-                        "max_tokens": 800,
-                    }
-                    try:
-                        sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=16.0)
-                        if sec_resp.status_code == 200:
-                            sec_data = sec_resp.json()
-                            raw_reply = sec_data["choices"][0]["message"]["content"].strip()
-                            clean_json = raw_reply
-                            if "```json" in clean_json:
-                                clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
-                            elif "```" in clean_json:
-                                clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
-                            parsed = json.loads(clean_json)
-                            used_model = sec_model
-                        else:
-                            vision_error_note = f"{vision_error_note}; secondary ({sec_model}): HTTP {sec_resp.status_code}".strip("; ")
-                            _log.warning("Secondary vision query returned HTTP %s for %s", sec_resp.status_code, sec_model)
-                    except Exception as sec_err:
-                        vision_error_note = f"secondary: {type(sec_err).__name__} {str(sec_err)[:80]}"
-                        _log.warning("Secondary vision query failed: %s", vision_error_note)
+                    for sec_url, sec_headers, sec_model in sec_candidates:
+                        sec_payload = {
+                            "model": sec_model,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": v_prompt},
+                                        {"type": "image_url", "image_url": {"url": img_url_to_send}},
+                                    ]
+                                }
+                            ],
+                            "max_tokens": 900,
+                            "temperature": 0.0,
+                        }
+                        try:
+                            sec_resp = await client.post(sec_url, headers=sec_headers, json=sec_payload, timeout=18.0)
+                            if sec_resp.status_code == 200:
+                                sec_data = sec_resp.json()
+                                raw_reply = sec_data["choices"][0]["message"]["content"].strip()
+                                clean_json = raw_reply
+                                if "```json" in clean_json:
+                                    clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                                elif "```" in clean_json:
+                                    clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                                if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
+                                    clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
+                                parsed = json.loads(clean_json)
+                                used_model = sec_model
+                                break
+                            else:
+                                vision_error_note = f"{vision_error_note}; secondary ({sec_model}): HTTP {sec_resp.status_code}".strip("; ")
+                                _log.warning("Secondary vision query returned HTTP %s for %s", sec_resp.status_code, sec_model)
+                        except Exception as sec_err:
+                            vision_error_note = f"secondary ({sec_model}): {type(sec_err).__name__} {str(sec_err)[:80]}"
+                            _log.warning("Secondary vision query failed: %s", vision_error_note)
 
                 if parsed and isinstance(parsed, dict):
                     ABSTRACT_SHAPES = {"rectangle", "rectangles", "square", "squares", "circle", "circles", "triangle", "triangles", "polygon", "geometric shapes", "geometric shape", "shape", "shapes", "color block", "color patch"}
@@ -529,12 +576,19 @@ class VisionConnectorFeature(BaseFeature):
                     background_val = str(parsed.get("background") or "Standard")
                     scene_type_val = str(parsed.get("scene_type") or "Product Image")
 
-                    # Parse Native 2D Spatial Grounding Boxes from Gemini Vision
+                    if isinstance(parsed.get("custom_criteria_observations"), dict):
+                        custom_obs_dict = {
+                            str(k).strip(): str(v).strip()
+                            for k, v in parsed["custom_criteria_observations"].items()
+                            if k and v and str(v).strip()
+                        }
+
+                    # Parse Native 2D Spatial Grounding Boxes from Gemini / Multimodal Vision
                     gemini_boxes = []
                     if parsed.get("boxes_2d") and isinstance(parsed["boxes_2d"], list):
                         for b_item in parsed["boxes_2d"]:
-                            if isinstance(b_item, dict) and "box_2d" in b_item:
-                                coords = b_item["box_2d"]
+                            if isinstance(b_item, dict):
+                                coords = b_item.get("box_2d") or b_item.get("box") or b_item.get("bbox")
                                 if isinstance(coords, (list, tuple)) and len(coords) == 4:
                                     try:
                                         ymin, xmin, ymax, xmax = [float(v) for v in coords]
@@ -542,7 +596,7 @@ class VisionConnectorFeature(BaseFeature):
                                         y_pct = max(0, min(95, int(round((ymin / 1000.0) * 100))))
                                         w_pct = max(5, min(100, int(round(((xmax - xmin) / 1000.0) * 100))))
                                         h_pct = max(5, min(100, int(round(((ymax - ymin) / 1000.0) * 100))))
-                                        lbl = str(b_item.get("label") or "Detected Object").strip().title()
+                                        lbl = str(b_item.get("label") or b_item.get("name") or "Detected Object").strip().title()
                                         gemini_boxes.append({
                                             "label": lbl,
                                             "confidence": 96.0,
@@ -559,6 +613,13 @@ class VisionConnectorFeature(BaseFeature):
                                         pass
                     if gemini_boxes:
                         yolo_boxes = gemini_boxes
+                    elif detected_objects:
+                        # Vision API succeeded without returning explicit boxes_2d: purge any stale low-confidence YOLO labels
+                        det_low = {o.lower() for o in detected_objects}
+                        yolo_boxes = [
+                            b for b in (yolo_boxes if "yolo_boxes" in locals() and yolo_boxes else [])
+                            if float(b.get("confidence", 0.0)) >= 65.0 and str(b.get("label", "")).lower() in det_low
+                        ]
 
                     visual_summary = f"Verified Vision Analysis ({used_model}): {raw_reply}"
                     vision_api_ok = True
@@ -583,6 +644,8 @@ class VisionConnectorFeature(BaseFeature):
         metadata["visual_defects"] = defect_status
         metadata["visual_detected_objects"] = detected_objects
         metadata["visual_objects_summary"] = ", ".join(detected_objects) if detected_objects else ""
+        if custom_obs_dict:
+            metadata["visual_custom_observations"] = custom_obs_dict
         if primary_product_name:
             metadata["visual_primary_product"] = primary_product_name
         if item_colors_desc:

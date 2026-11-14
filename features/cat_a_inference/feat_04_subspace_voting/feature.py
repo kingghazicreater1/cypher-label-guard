@@ -1426,10 +1426,6 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
             if vis_quality:
                 vision_hints.append(f"Verified Specimen Quality: {vis_quality}")
 
-        vision_ground_truth_str = ""
-        if vision_hints:
-            vision_ground_truth_str = "\nVERIFIED MULTIMODAL VISION GROUND TRUTH (Camera / Specimen Ingress):\n" + "\n".join(f"- {h}" for h in vision_hints) + "\n"
-
         _ABSTRACT_SHAPE_TERMS = (
             "rectangle", "rectangular shape", "square", "circle", "circular shape",
             "triangle", "triangular shape", "polygon", "geometric shape",
@@ -1443,6 +1439,16 @@ class SubspaceDisagreementVotingFeature(BaseFeature):
                 for o in vis_objects
             )
         )
+        if has_visual_metadata and _has_identifiable_product:
+            vis_custom_obs = vis_meta.get("visual_custom_observations")
+            if isinstance(vis_custom_obs, dict):
+                for obs_k, obs_v in vis_custom_obs.items():
+                    if obs_k and obs_v and str(obs_v).strip():
+                        vision_hints.append(f"Verified Visual Inspection [{obs_k}]: {str(obs_v).strip()}")
+
+        vision_ground_truth_str = ""
+        if vision_hints:
+            vision_ground_truth_str = "\nVERIFIED MULTIMODAL VISION GROUND TRUTH (Camera / Specimen Ingress):\n" + "\n".join(f"- {h}" for h in vision_hints) + "\n"
         if has_visual_metadata:
             price_ccy = (os.getenv("REPORT_PRICE_CURRENCY") or "").strip().upper()
             ccy_note = f" in {price_ccy}" if price_ccy else ""
@@ -1696,6 +1702,14 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
             if crit_votes:
                 total_voters = len(crit_votes)
 
+                c_intent = self.classify_heading_intent(name)
+                ABSTRACT_SHAPES = {
+                    "rectangle", "rectangles", "square", "squares", "circle", "circles",
+                    "triangle", "triangles", "polygon", "geometric shapes", "geometric shape",
+                    "shape", "shapes", "color block", "color patch", "color swatch", "color swatches",
+                    "swatch", "swatches", "solid color", "background"
+                }
+
                 # Separate substantive (non-fallback, non-unverified, non-tautological echo) values
                 def _is_invalid_or_echo(val_item: Any, c_name: str) -> bool:
                     if val_item is None:
@@ -1708,6 +1722,11 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                     if s_low == c_low:
                         return True
                     if s_low in ["product name", "item name", "field value", "unspecified", "unknown", "n/a", "none"]:
+                        return True
+                    if c_intent == "PRODUCT_NAME" and (
+                        s_low in ["not specified", "not specified in document", "none detected", "no product", "no product detected", "blue rectangle"]
+                        or s_low in ABSTRACT_SHAPES
+                    ):
                         return True
                     if FallbackRegistry.is_fallback(s)[0]:
                         return True
@@ -1722,14 +1741,6 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
 
                 # If substantive values exist alongside unverified refusals, substantive values take precedence
                 active_values = substantive_values if substantive_values else values
-
-                c_intent = self.classify_heading_intent(name)
-                ABSTRACT_SHAPES = {
-                    "rectangle", "rectangles", "square", "squares", "circle", "circles",
-                    "triangle", "triangles", "polygon", "geometric shapes", "geometric shape",
-                    "shape", "shapes", "color block", "color patch", "color swatch", "color swatches",
-                    "swatch", "swatches", "solid color", "background"
-                }
                 valid_objs = [o for o in vis_objects if o.strip().lower() not in ABSTRACT_SHAPES]
                 valid_primary = vis_primary if (vis_primary and vis_primary.strip().lower() not in ABSTRACT_SHAPES) else ""
                 has_visual_metadata = bool(valid_primary or valid_objs or (vis_meta.get("visual_human_present") is not None))
@@ -1881,7 +1892,7 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                     str_vals = [str(x) for x in active_values]
                     most_common, freq = Counter(str_vals).most_common(1)[0]
                     chosen_val = active_values[str_vals.index(most_common)]
-                    if freq == 1 and substantive_values:
+                    if freq < len(str_vals) and substantive_values:
                         norm_groups: Dict[str, List[str]] = {}
                         for raw_s in str_vals:
                             canon = self._canonicalize_short_label(raw_s, c_type)
@@ -1890,6 +1901,51 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         if len(best_group) > freq:
                             freq = len(best_group)
                             chosen_val = max(best_group, key=len)
+
+                        # Token-subset / core-concept clustering for short noun phrases (e.g. "Silver", "Silver metal", "Silver metal spoon")
+                        if freq < len(str_vals) and c_type not in ("Boolean", "Scale", "Range"):
+                            _POLARITY_EXCLUSIVE = {"yes", "no", "true", "false", "high", "low", "medium", "indoor", "outdoor", "edible", "non"}
+                            _PRIMARY_HUES = {"red", "blue", "green", "yellow", "orange", "purple", "pink", "black", "white", "brown", "gold", "silver"}
+                            ordered_vals = sorted(
+                                str_vals,
+                                key=lambda s: (len(self._extract_concept_stems(s)), len(s)),
+                                reverse=True,
+                            )
+                            short_clusters: List[Dict[str, Any]] = []
+                            for raw_s in ordered_vals:
+                                low_s = raw_s.strip().lower()
+                                if re.search(r"\d", low_s) or low_s in _POLARITY_EXCLUSIVE:
+                                    short_clusters.append({"members": [raw_s], "stems": set()})
+                                    continue
+                                stems_s = self._extract_concept_stems(raw_s)
+                                if not stems_s:
+                                    short_clusters.append({"members": [raw_s], "stems": set()})
+                                    continue
+                                hues_s = stems_s & _PRIMARY_HUES
+                                matched_sc = False
+                                for sc in short_clusters:
+                                    stems_c = sc["stems"]
+                                    if not stems_c:
+                                        continue
+                                    if self._has_condition_conflict(raw_s, sc["members"][0]):
+                                        continue
+                                    hues_c = stems_c & _PRIMARY_HUES
+                                    if hues_s and hues_c and hues_s != hues_c and not (hues_s <= hues_c or hues_c <= hues_s):
+                                        continue
+                                    shared_cnt = len(stems_s & stems_c)
+                                    min_sz = min(len(stems_s), len(stems_c))
+                                    if stems_s <= stems_c or stems_c <= stems_s or (min_sz > 0 and (shared_cnt / min_sz) >= 0.65):
+                                        sc["members"].append(raw_s)
+                                        sc["stems"] = stems_c | stems_s
+                                        matched_sc = True
+                                        break
+                                if not matched_sc:
+                                    short_clusters.append({"members": [raw_s], "stems": set(stems_s)})
+                            if short_clusters:
+                                best_sc = max(short_clusters, key=lambda sc: (len(sc["members"]), max(len(m) for m in sc["members"])))
+                                if len(best_sc["members"]) > freq:
+                                    freq = len(best_sc["members"])
+                                    chosen_val = max(best_sc["members"], key=len)
                     effective_total = len(active_values) if substantive_values else total_voters
                     concordance_ratio = freq / effective_total
                     agree_str = f"{freq} of {effective_total} APIs concordant"

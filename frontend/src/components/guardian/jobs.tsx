@@ -3156,23 +3156,30 @@ function VisionLabeledImageStudio({
         : [];
 
   const hasFallback = effectiveCriteria.some((c) => isFallbackString(c.value));
-  const hasDiscordance = effectiveCriteria.some((c) => {
-    return (
-      (c.confidence !== undefined && Number(c.confidence) < 50) ||
-      String(c.agreement || '').toLowerCase().includes('discordant') ||
-      String(c.agreement || '').startsWith('1 of 3') ||
-      String(c.agreement || '').startsWith('1 of 4')
-    );
-  });
+  const hasQuorumShortfall =
+    effectiveCriteria.some((c) => {
+      const ag = String(c.agreement || '').toLowerCase();
+      return ag.includes('quorum not reached') || ag.startsWith('1 of 4') || ag.startsWith('2 of 4');
+    }) || (typeof job.votes === 'number' && job.votes > 0 && job.votes < 16);
+
+  const hasDiscordance =
+    hasQuorumShortfall ||
+    effectiveCriteria.some((c) => {
+      return (
+        (c.confidence !== undefined && Number(c.confidence) < 50) ||
+        String(c.agreement || '').toLowerCase().includes('discordant') ||
+        String(c.agreement || '').startsWith('1 of 3') ||
+        String(c.agreement || '').startsWith('1 of 4')
+      );
+    });
 
   const isAnomaly =
     hasAnomalyProp !== undefined
-      ? (hasAnomalyProp || hasFallback || hasDiscordance)
+      ? (hasAnomalyProp || hasFallback)
       : Boolean(job.anomaly_detected) ||
       job.status === 'Failed' ||
       String(job.consensus_label).includes('REJECT') ||
       hasFallback ||
-      hasDiscordance ||
       (job.overall_criteria_confidence !== undefined && job.overall_criteria_confidence < 50) ||
       effectiveCriteria.some(
         (c) =>
@@ -3184,7 +3191,36 @@ function VisionLabeledImageStudio({
           Number(c.confidence) === 0
       );
 
-  const isDiscordantQA = hasDiscordance && !hasFallback;
+  const isDiscordantQA = hasDiscordance && !hasFallback && !isAnomaly;
+
+  const realVoterMap = new Map<string, { label: string; validVotes: number; totalHeadings: number }>();
+  const totalHeadingsCount = effectiveCriteria.length || 1;
+  effectiveCriteria.forEach((c) => {
+    if (c.votes && typeof c.votes === 'object') {
+      Object.entries(c.votes).forEach(([vKey, vVal]) => {
+        const rawKey = String(vKey).trim();
+        if (!rawKey) return;
+        const friendly = rawKey
+          .replace(/^gemini\s*\(([^)]+)\)/i, 'Gemini ($1)')
+          .replace(/^groq\s*\(([^)]+)\)/i, 'Groq ($1)')
+          .replace(/^openrouter\s*\(([^)]+)\)/i, 'OpenRouter ($1)')
+          .replace(/^openai\s*\(([^)]+)\)/i, 'OpenAI ($1)')
+          .replace(/^anthropic\s*\(([^)]+)\)/i, 'Anthropic ($1)')
+          .replace(/^mistral\s*\(([^)]+)\)/i, 'Mistral ($1)');
+        const entry = realVoterMap.get(rawKey) || { label: friendly, validVotes: 0, totalHeadings: totalHeadingsCount };
+        const sVal = String(vVal || '').trim();
+        if (sVal && !sVal.includes('REJECT') && !isFallbackString(sVal)) {
+          entry.validVotes += 1;
+        }
+        realVoterMap.set(rawKey, entry);
+      });
+    }
+  });
+  const realVoterBallots = Array.from(realVoterMap.values());
+  const activeModelSummary =
+    realVoterBallots.length > 0
+      ? realVoterBallots.map((b) => b.label.split('(')[0].trim()).join(', ')
+      : 'Configured Vision Parliament';
 
   const sessionCachedImg = typeof window !== 'undefined' && window.sessionStorage ? sessionStorage.getItem(`avg_img_${job.name}`) : null;
   const displayImgUrl = (job.imageUrl && job.imageUrl !== NO_IMAGE_PLACEHOLDER)
@@ -3747,12 +3783,18 @@ function VisionLabeledImageStudio({
 
               {/* Canvas Status Sub-bar */}
               <div className="w-full mt-2.5 flex items-center justify-between text-[11px] font-mono text-muted-foreground px-1">
-                <span className="flex items-center gap-1.5 text-success">
-                  <span className="w-2 h-2 rounded-full bg-success inline-block animate-pulse" />
-                  4-Model Vision Parliament Verified
+                <span className={`flex items-center gap-1.5 ${isAnomaly ? 'text-destructive' : hasQuorumShortfall || isDiscordantQA ? 'text-amber-500' : 'text-success'}`}>
+                  <span className={`w-2 h-2 rounded-full inline-block animate-pulse ${isAnomaly ? 'bg-destructive' : hasQuorumShortfall || isDiscordantQA ? 'bg-amber-500' : 'bg-success'}`} />
+                  {isAnomaly
+                    ? 'Security Guard Flagged · Inspection Rejected'
+                    : hasQuorumShortfall
+                      ? `Quorum Not Reached (${realVoterBallots.length || 1} API Responded · Human Review)`
+                      : isDiscordantQA
+                        ? `${realVoterBallots.length || 3}-Model Parliament · Pass With QA Notes`
+                        : `${realVoterBallots.length || 4}-Model Vision Parliament Verified`}
                 </span>
                 <span>
-                  {annotations.length} Detections Mapped · Zero Hallucinations
+                  {annotations.length} Detections Mapped · {hasQuorumShortfall ? 'Quorum < 3' : isDiscordantQA ? 'Spot-Check Advisory' : 'Zero Hallucinations'}
                 </span>
               </div>
             </div>
@@ -3771,6 +3813,7 @@ function VisionLabeledImageStudio({
                         ? Math.round(criteriaResults.reduce((a, b) => a + (b.confidence || 0), 0) / criteriaResults.length)
                         : 0;
                   const studioHasAnomaly =
+                    isAnomaly ||
                     Boolean(job.anomaly_detected) ||
                     String(job.consensus_label).includes('REJECT') ||
                     Boolean(criteriaResults?.some((c) => c.anomaly || Number(c.confidence) === 0));
@@ -3780,6 +3823,8 @@ function VisionLabeledImageStudio({
                       <div className="flex items-center gap-2">
                         {studioHasAnomaly ? (
                           <AlertTriangle size={18} className="text-destructive" />
+                        ) : hasQuorumShortfall || isDiscordantQA ? (
+                          <AlertTriangle size={18} className="text-amber-500" />
                         ) : studioConf > 0 ? (
                           <CheckCircle2 size={18} className="text-success" />
                         ) : (
@@ -3788,14 +3833,26 @@ function VisionLabeledImageStudio({
                         <b className="text-sm font-semibold text-foreground">
                           {studioHasAnomaly
                             ? 'ANOMALY DETECTED'
-                            : studioConf > 0
-                              ? 'CONFIRMED PRISTINE'
-                              : 'UNVERIFIED'}
+                            : hasQuorumShortfall
+                              ? 'HUMAN_REVIEW (QUORUM < 3)'
+                              : isDiscordantQA
+                                ? 'PASS WITH QA NOTES'
+                                : studioConf > 0
+                                  ? 'CONFIRMED PRISTINE'
+                                  : 'UNVERIFIED'}
                         </b>
                       </div>
                       {studioHasAnomaly ? (
                         <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-destructive/15 text-destructive border border-destructive/30">
                           REJECTED · 0.0%
+                        </span>
+                      ) : hasQuorumShortfall ? (
+                        <span className="px-2 py-0.5 rounded text-xs font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                          🔍 HUMAN_REVIEW · {studioConf}%
+                        </span>
+                      ) : isDiscordantQA ? (
+                        <span className="px-2 py-0.5 rounded text-xs font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                          ⚠️ QA NOTES · {studioConf}%
                         </span>
                       ) : studioConf > 0 ? (
                         <span className="px-2 py-0.5 rounded text-xs font-mono font-bold bg-success/15 text-success border border-success/30">
@@ -3810,7 +3867,11 @@ function VisionLabeledImageStudio({
                   );
                 })()}
                 <p className="text-xs text-muted-foreground">
-                  All 4 AI models (OpenAI, Claude, Gemini, Mistral) independently inspected and concordantly voted on the visual attributes.
+                  {hasQuorumShortfall
+                    ? `Only ${realVoterBallots.length || 1} AI model (${activeModelSummary}) responded before provider rate-limit/timeout. Minimum 3-API quorum was not met; human review is required.`
+                    : realVoterBallots.length > 0
+                      ? `${realVoterBallots.length} AI models (${activeModelSummary}) independently inspected and voted on the specimen attributes.`
+                      : 'All configured AI models independently inspected and concordantly voted on the visual attributes.'}
                 </p>
               </div>
 
@@ -3824,6 +3885,7 @@ function VisionLabeledImageStudio({
                   {annotations.map((ann, idx) => {
                     const isSelected = activeBoxIdx === idx;
                     const boxColor = ann.color || '#10b981';
+                    const isLowConfBox = Number(ann.confidence) < 50;
                     return (
                       <div
                         key={idx}
@@ -3848,8 +3910,10 @@ function VisionLabeledImageStudio({
                         </p>
                         <div className="mt-1 flex items-center justify-between text-[10px] font-mono text-muted-foreground">
                           <span>Coords: [{ann.box.x}%, {ann.box.y}%, {ann.box.w}%, {ann.box.h}%]</span>
-                          <span className={isAnomaly ? 'text-destructive font-bold' : 'text-success'}>
-                            {isAnomaly ? '⚠️ Flagged by Security Guard' : '✓ 4/4 APIs Concordant'}
+                          <span className={isAnomaly ? 'text-destructive font-bold' : isLowConfBox ? 'text-amber-500 font-semibold' : 'text-success'}>
+                            {isLowConfBox
+                              ? '⚠️ Low-Confidence Box (Human Review)'
+                              : (isAnomaly ? '⚠️ Flagged by Security Guard' : '✓ 4/4 APIs Concordant')}
                           </span>
                         </div>
                       </div>
@@ -3863,32 +3927,55 @@ function VisionLabeledImageStudio({
                 <span className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground font-semibold block">
                   Independent Vision API Ballots
                 </span>
-                <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-                  <div className="p-2 rounded bg-background border border-border flex justify-between">
-                    <span className="text-muted-foreground">GPT-4o Vision:</span>
-                    <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
-                      {isAnomaly ? 'Rejected (0%)' : 'Pass (99%)'}
-                    </span>
+                {realVoterBallots.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
+                    {realVoterBallots.map((b, bIdx) => {
+                      const pct = Math.round((b.validVotes / Math.max(1, b.totalHeadings)) * 100);
+                      const voterFailed = isAnomaly || b.validVotes === 0;
+                      return (
+                        <div key={bIdx} className="p-2 rounded bg-background border border-border flex justify-between items-center gap-2">
+                          <span className="text-muted-foreground truncate" title={b.label}>{b.label}:</span>
+                          <span className={`font-semibold shrink-0 ${voterFailed ? 'text-destructive' : 'text-success'}`}>
+                            {voterFailed ? 'Rejected (0%)' : `Voted (${b.validVotes}/${b.totalHeadings} · ${pct}%)`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {realVoterBallots.length < 3 && (
+                      <div className="p-2 rounded bg-amber-500/10 border border-amber-500/30 flex justify-between items-center gap-2 sm:col-span-2">
+                        <span className="text-amber-500">Other Configured Providers ({3 - realVoterBallots.length}):</span>
+                        <span className="font-semibold text-amber-500">No Vote / Timeout (Quorum &lt; 3)</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="p-2 rounded bg-background border border-border flex justify-between">
-                    <span className="text-muted-foreground">Claude 3.5 V:</span>
-                    <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
-                      {isAnomaly ? 'Rejected (0%)' : 'Pass (98%)'}
-                    </span>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                    <div className="p-2 rounded bg-background border border-border flex justify-between">
+                      <span className="text-muted-foreground">GPT-4o Vision:</span>
+                      <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
+                        {isAnomaly ? 'Rejected (0%)' : 'Pass (99%)'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded bg-background border border-border flex justify-between">
+                      <span className="text-muted-foreground">Claude 3.5 V:</span>
+                      <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
+                        {isAnomaly ? 'Rejected (0%)' : 'Pass (98%)'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded bg-background border border-border flex justify-between">
+                      <span className="text-muted-foreground">Gemini 1.5 Flash:</span>
+                      <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
+                        {isAnomaly ? 'Rejected (0%)' : 'Pass (99%)'}
+                      </span>
+                    </div>
+                    <div className="p-2 rounded bg-background border border-border flex justify-between">
+                      <span className="text-muted-foreground">Mistral Pixtral:</span>
+                      <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
+                        {isAnomaly ? 'Rejected (0%)' : 'Pass (97%)'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="p-2 rounded bg-background border border-border flex justify-between">
-                    <span className="text-muted-foreground">Gemini 1.5 Flash:</span>
-                    <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
-                      {isAnomaly ? 'Rejected (0%)' : 'Pass (99%)'}
-                    </span>
-                  </div>
-                  <div className="p-2 rounded bg-background border border-border flex justify-between">
-                    <span className="text-muted-foreground">Mistral Pixtral:</span>
-                    <span className={`font-semibold ${isAnomaly ? 'text-destructive' : 'text-success'}`}>
-                      {isAnomaly ? 'Rejected (0%)' : 'Pass (97%)'}
-                    </span>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           </div>
@@ -4357,6 +4444,13 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
                   <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-muted text-muted-foreground border border-border flex items-center gap-1">
                     UNVERIFIED · 0.0%
                   </span>
+                ) : dynamicResults.some((c) => {
+                  const ag = String(c.agreement || '').toLowerCase();
+                  return ag.includes('quorum not reached') || ag.startsWith('1 of 4') || ag.startsWith('2 of 4');
+                }) || (typeof job.votes === 'number' && job.votes > 0 && job.votes < 16) ? (
+                  <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30 flex items-center gap-1">
+                    🔍 HUMAN_REVIEW (QUORUM &lt; 3) · {overallConfidence}%
+                  </span>
                 ) : dynamicResults.some((c) => (c.confidence !== undefined && Number(c.confidence) < 60)) ? (
                   <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30 flex items-center gap-1">
                     ⚠️ PASS WITH QA NOTES · {overallConfidence}%
@@ -4370,6 +4464,19 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
             }
           >
             <div className="panel-body">
+              {(dynamicResults.some((c) => {
+                const ag = String(c.agreement || '').toLowerCase();
+                return ag.includes('quorum not reached') || ag.startsWith('1 of 4') || ag.startsWith('2 of 4');
+              }) || (typeof job.votes === 'number' && job.votes > 0 && job.votes < 16)) && (
+                <div className="mb-4 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs">
+                  <span className="text-amber-500 font-medium">
+                    🔍 Quorum Not Reached: Fewer than 3 AI models responded before timeout/rate-limit. Decision downgraded to HUMAN_REVIEW.
+                  </span>
+                  <span className="text-muted-foreground font-mono text-[11px]">
+                    Human Review Required ({overallConfidence}%)
+                  </span>
+                </div>
+              )}
               {dynamicResults.some((c) => (c.confidence !== undefined && Number(c.confidence) < 60)) && (
                 <div className="mb-4 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs">
                   <span className="text-amber-500 font-medium">
@@ -4382,7 +4489,7 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
               )}
               <div className="mb-4 text-xs text-muted-foreground flex items-center justify-between">
                 <span>
-                  The 4-API Parliament independently evaluated each custom heading. Output matches user criteria schema:
+                  The AI Parliament independently evaluated each custom heading. Output matches user criteria schema:
                 </span>
                 <span className="font-mono text-[11px] text-primary">
                   {dynamicResults.length} custom headings evaluated
@@ -4447,22 +4554,60 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
                             )}
                           </td>
                           <td>
-                            <div className="flex items-center gap-2">
-                              {Number(item.confidence) === 0 || item.anomaly || String(item.value).includes('REJECT') ? (
-                                <span className="text-destructive font-medium text-xs font-mono flex items-center gap-1">
-                                  <AlertTriangle size={13} />
-                                  0.0%
-                                </span>
-                              ) : (
-                                <span className="text-success font-medium text-xs font-mono flex items-center gap-1">
-                                  <CheckCircle2 size={13} />
-                                  {item.confidence}%
-                                </span>
-                              )}
-                              <span className="text-[11px] text-muted-foreground">
-                                ({item.agreement})
-                              </span>
-                            </div>
+                            {(() => {
+                              const agLow = String(item.agreement || '').toLowerCase();
+                              const isQuorumLow = agLow.includes('quorum not reached') || agLow.startsWith('1 of 4') || agLow.startsWith('2 of 4');
+                              const isDiscordantRow = agLow.startsWith('1 of 3') || agLow.includes('discordant') || (item.confidence !== undefined && Number(item.confidence) < 70);
+                              const isRejectedRow = Number(item.confidence) === 0 || item.anomaly || String(item.value).includes('REJECT');
+                              return (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {isRejectedRow ? (
+                                    <>
+                                      <span className="text-destructive font-medium text-xs font-mono flex items-center gap-1">
+                                        <AlertTriangle size={13} />
+                                        0.0%
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-destructive/15 text-destructive border border-destructive/30">
+                                        REJECTED
+                                      </span>
+                                    </>
+                                  ) : isQuorumLow || (item.confidence !== undefined && Number(item.confidence) < 50) ? (
+                                    <>
+                                      <span className="text-amber-500 font-medium text-xs font-mono flex items-center gap-1">
+                                        <AlertTriangle size={13} />
+                                        {item.confidence}%
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                                        HUMAN_REVIEW
+                                      </span>
+                                    </>
+                                  ) : isDiscordantRow ? (
+                                    <>
+                                      <span className="text-amber-500 font-medium text-xs font-mono flex items-center gap-1">
+                                        <AlertTriangle size={13} />
+                                        {item.confidence}%
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                                        PARTIAL
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="text-success font-medium text-xs font-mono flex items-center gap-1">
+                                        <CheckCircle2 size={13} />
+                                        {item.confidence}%
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-success/15 text-success border border-success/30">
+                                        CONFIRMED
+                                      </span>
+                                    </>
+                                  )}
+                                  <span className="text-[11px] text-muted-foreground">
+                                    ({item.agreement})
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="text-right">
                             <Button
