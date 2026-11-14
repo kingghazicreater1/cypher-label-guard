@@ -22,6 +22,7 @@ import {
   type CriterionResult,
 } from '@/lib/api';
 import { deriveModality } from '@/lib/modality';
+import { storeLocalThumbnail } from '@/lib/label-utils';
 
 type GuardianState = {
   jobs: Job[];
@@ -335,6 +336,10 @@ export function GuardianProvider({ children }: { children: ReactNode }) {
         : undefined;
 
       const realJobId = result.job_number || result.job_id || newId;
+      if (isImageJob && finalImageUrl) {
+        storeLocalThumbnail(name || `Vision Labeled Image #${realJobId}`, finalImageUrl);
+        storeLocalThumbnail(realJobId, finalImageUrl);
+      }
 
       const finalJob: Job = {
         id: realJobId,

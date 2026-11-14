@@ -12,7 +12,15 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from api.export_utils import (
+    build_catalog_pdf_bytes,
+    default_price_col_label,
+    parse_column_aliases,
+    render_csv_text,
+    resolve_display_heading,
+    unwrap_query_param,
+)
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -459,17 +467,54 @@ def _billable_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _col_label(name: str) -> str:
     """Report column label. Price-like fields are flagged as AI estimates so they are never read as listed prices.
     Set REPORT_PRICE_CURRENCY (e.g. PKR) to state the currency."""
-    if re.search(r"price|cost|mrp|amount|rate", name, re.IGNORECASE) and not re.search(r"\(.*\)", name):
-        cur = os.getenv("REPORT_PRICE_CURRENCY", "").strip().upper()
-        return f"{name} ({cur}, AI estimate)" if cur else f"{name} (AI estimate, currency not specified)"
-    return name
+    return default_price_col_label(name)
 
 
-def _rows(s: Dict[str, Any]) -> (List[str], List[Dict[str, Any]]):
+def _match_criterion_result(criteria_results: List[Dict[str, Any]], crit_name: str) -> Dict[str, Any]:
+    """Matches an item's criterion result to the requested criterion column using alphanumeric normalization."""
+    by_norm = {}
+    for c in (criteria_results or []):
+        k = (c.get("name") or c.get("heading") or "").strip()
+        if k:
+            by_norm[re.sub(r"[^a-z0-9]", "", k.lower())] = c
+    norm_n = re.sub(r"[^a-z0-9]", "", (crit_name or "").lower())
+    c = by_norm.get(norm_n)
+    if not c:
+        c = next((v for k, v in by_norm.items() if (k in norm_n or norm_n in k)), {})
+    return c or {}
+
+
+def _rows(
+    s: Dict[str, Any],
+    aliases: Optional[Dict[str, str]] = None,
+    mode: str = "audit",
+) -> Tuple[List[str], List[Dict[str, Any]]]:
     crit_names: List[str] = [c["name"] for c in s["criteria"]]
-    rows = []
+    used_labels: set = set()
+    col_map = [
+        (
+            n,
+            resolve_display_heading(
+                n,
+                aliases,
+                apply_price_note=(mode == "audit"),
+                used_labels=used_labels,
+            ),
+        )
+        for n in crit_names
+    ]
+    rows: List[Dict[str, Any]] = []
     for it in s["items"]:
-        row: Dict[str, Any] = {
+        crit_results = it.get("criteria_results") or []
+        if mode == "store":
+            row: Dict[str, Any] = {"Photo": it["name"]}
+            for orig_n, disp_n in col_map:
+                c = _match_criterion_result(crit_results, orig_n)
+                row[disp_n] = c.get("value", "")
+            rows.append(row)
+            continue
+
+        row = {
             "Photo": it["name"],
             "Folder": s["folder_name"],
             "Status": it["status"],
@@ -477,25 +522,45 @@ def _rows(s: Dict[str, Any]) -> (List[str], List[Dict[str, Any]]):
             "Votes": it.get("votes", ""),
             "Overall_Confidence_%": it.get("overall_confidence", ""),
         }
-        by_norm = {}
-        for c in (it.get("criteria_results") or []):
-            k = (c.get("name") or c.get("heading") or "").strip()
-            if k:
-                by_norm[re.sub(r'[^a-z0-9]', '', k.lower())] = c
-
-        for n in crit_names:
-            norm_n = re.sub(r'[^a-z0-9]', '', n.lower())
-            c = by_norm.get(norm_n)
-            if not c:
-                # Loose match fallback
-                c = next((v for k, v in by_norm.items() if (k in norm_n or norm_n in k)), {})
-            row[_col_label(n)] = c.get("value", "")
-            row[f"{_col_label(n)}_Confidence_%"] = c.get("confidence", "")
+        for orig_n, disp_n in col_map:
+            c = _match_criterion_result(crit_results, orig_n)
+            row[disp_n] = c.get("value", "")
+            row[f"{disp_n}_Confidence_%"] = c.get("confidence", "")
         row["Lineage_Hash"] = it.get("lineage_hash", "")
         row["Trace_ID"] = it.get("trace_id", "")
         row["Error"] = it.get("error", "")
         rows.append(row)
-    return list(rows[0].keys()) if rows else [], rows
+    return (list(rows[0].keys()) if rows else []), rows
+
+
+def _to_catalog_items(s: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalizes batch items for shared 1-product-per-page PDF catalog rendering."""
+    crit_names: List[str] = [c["name"] for c in s["criteria"]]
+    catalog_items: List[Dict[str, Any]] = []
+    for it in s["items"]:
+        crit_results = it.get("criteria_results") or []
+        ordered_criteria = []
+        for orig_n in crit_names:
+            c = _match_criterion_result(crit_results, orig_n)
+            ordered_criteria.append({
+                "name": orig_n,
+                "value": c.get("value", ""),
+                "confidence": c.get("confidence", ""),
+                "anomaly": c.get("anomaly", False),
+            })
+        catalog_items.append({
+            "name": it.get("name", ""),
+            "folder": s.get("folder_name", ""),
+            "status": it.get("status", ""),
+            "decision": it.get("decision", ""),
+            "votes": it.get("votes", ""),
+            "overall_confidence": it.get("overall_confidence", ""),
+            "trace_id": it.get("trace_id", ""),
+            "lineage_hash": it.get("lineage_hash", ""),
+            "error": it.get("error", ""),
+            "criteria": ordered_criteria,
+        })
+    return catalog_items
 
 
 @router.get("/report/{batch_id}")
@@ -503,12 +568,20 @@ async def image_batch_report(
     batch_id: str,
     format: str = Query("csv", pattern="^(csv|json|pdf)$"),
     user: Optional[User] = Depends(get_optional_current_user),
+    mode: str = Query("audit", pattern="^(audit|store)$"),
+    layout: str = Query("catalog", pattern="^(catalog|table)$"),
+    aliases: Optional[str] = Query(None, description="Optional JSON mapping original headings -> custom store headings"),
 ):
     s = _owned(batch_id, user)
     if s["status"] == "PROCESSING":
         raise HTTPException(status_code=409, detail="Batch is still processing; report is available when it finishes.")
+
+    mode_val = str(unwrap_query_param(mode, "audit") or "audit").lower()
+    layout_val = str(unwrap_query_param(layout, "catalog") or "catalog").lower()
+    aliases_val = unwrap_query_param(aliases, None)
+    alias_map = parse_column_aliases(aliases_val if isinstance(aliases_val, str) else None)
+
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in s["name"]) or "batch"
-    headers_fn, rows = _rows(s)
 
     if format == "json":
         body = json.dumps({
@@ -522,6 +595,7 @@ async def image_batch_report(
             "failed": s["failed"],
             "credits_charged": s["credits_charged"],
             "elapsed_seconds": s["elapsed_seconds"],
+            "column_aliases": alias_map,
             "decision_legend": DECISION_LEGEND,
             "results": [_public_item(i) for i in s["items"]],
         }, indent=2)
@@ -529,81 +603,30 @@ async def image_batch_report(
                         headers={"Content-Disposition": f'attachment; filename="{safe}_audit.json"'})
 
     if format == "csv":
-        out = io.StringIO()
-        w = csv.DictWriter(out, fieldnames=headers_fn)
-        w.writeheader()
-        sanitized_rows = [
-            {k: _sanitize_csv_cell(v) for k, v in r.items()}
-            for r in rows
-        ]
-        w.writerows(sanitized_rows)
-        return Response(out.getvalue(), media_type="text/csv",
-                        headers={"Content-Disposition": f'attachment; filename="{safe}_audit.csv"'})
+        headers_fn, rows = _rows(s, aliases=alias_map, mode=mode_val)
+        csv_body = render_csv_text(headers_fn, rows)
+        suffix = "store" if mode_val == "store" else "audit"
+        return Response(csv_body, media_type="text/csv",
+                        headers={"Content-Disposition": f'attachment; filename="{safe}_{suffix}.csv"'})
 
     try:
-        from xml.sax.saxutils import escape as _xml_escape
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        subtitle = (
+            f"Collection: {s['folder_name']} | Tier: {s['depth_tier']} | "
+            f"Photos: {s['total']} | Completed: {s['total'] - s['failed']} | Failed: {s['failed']} | "
+            f"Credits: {s['credits_charged']} | Time: {s['elapsed_seconds']}s"
+        )
+        pdf_bytes = build_catalog_pdf_bytes(
+            title=str(s["name"]),
+            subtitle=subtitle,
+            items=_to_catalog_items(s),
+            layout=layout_val,
+            aliases=alias_map,
+            decision_legend=DECISION_LEGEND if layout_val == "table" else None,
+            apply_price_note=(mode_val == "audit" and layout_val == "table"),
+        )
     except ImportError:
         raise HTTPException(status_code=501, detail="PDF export needs 'reportlab' (pip install reportlab).")
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
-    st = getSampleStyleSheet()
-    head_style = ParagraphStyle("hd", parent=st["BodyText"], fontSize=7, leading=9, textColor=colors.white, wordWrap="CJK")
-    cell_style = ParagraphStyle("cl", parent=st["BodyText"], fontSize=7, leading=9, wordWrap="CJK")
-
-    def _cell(v: Any, limit: int = 120) -> Paragraph:
-        txt = str(v if v is not None else "")
-        if len(txt) > limit:
-            txt = txt[: limit - 3] + "..."
-        return Paragraph(_xml_escape(txt), cell_style)
-
-    cn = [_col_label(c["name"]) for c in s["criteria"]]
-    els = [
-        Paragraph(f"CypherLabelGuard - Batch Audit Report: {_xml_escape(str(s['name']))}", st["Title"]),
-        Paragraph(
-            f"Folder: <b>{_xml_escape(str(s['folder_name']))}</b> &nbsp; Depth: <b>{_xml_escape(str(s['depth_tier']))}</b> &nbsp; "
-            f"Photos: <b>{s['total']}</b> &nbsp; Completed: <b>{s['total'] - s['failed']}</b> &nbsp; "
-            f"Failed: <b>{s['failed']}</b> &nbsp; Credits: <b>{s['credits_charged']}</b> &nbsp; "
-            f"Time: <b>{s['elapsed_seconds']}s</b>", st["Normal"]),
-        Spacer(1, 6),
-        Paragraph("<b>How to read the Decision column:</b> " + " &nbsp;|&nbsp; ".join(
-            f"<b>{k}</b> = {_xml_escape(v)}" for k, v in DECISION_LEGEND.items()), st["BodyText"]),
-        Spacer(1, 8),
-    ]
-    head = ["Photo", "Decision", "Votes", "Conf %"] + cn + ["Lineage"]
-    data = [[Paragraph(_xml_escape(h), head_style) for h in head]]
-    for r in rows:
-        data.append([
-            _cell(r["Photo"], 40),
-            _cell(r.get("Decision", ""), 16),
-            _cell(r.get("Votes", ""), 8),
-            _cell(r["Overall_Confidence_%"], 8),
-            *[_cell(r.get(n, ""), 110) for n in cn],
-            _cell(r["Lineage_Hash"], 20),
-        ])
-    # Fixed column widths (A4 landscape usable width ~794pt) so cells never run into each other.
-    fixed = [88, 66, 34, 34, 61]  # Photo, Decision, Votes, Conf %, Lineage
-    usable = 794 - sum(fixed)
-    per_crit = max(55, int(usable / max(1, len(cn))))
-    col_widths = fixed[:4] + [per_crit] * len(cn) + [fixed[4]]
-    tbl = Table(data, colWidths=col_widths, repeatRows=1)
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#064e3b")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
-    ]))
-    els.append(tbl)
-    failed = [i for i in s["items"] if i["status"] == "FAILED"]
-    if failed:
-        els += [Spacer(1, 10), Paragraph("Failed photos (not charged):", st["Heading3"])]
-        els += [Paragraph(f"{_xml_escape(str(i['name']))}: {_xml_escape(str(i.get('error', '')))}", st["BodyText"]) for i in failed]
-    doc.build(els)
-    return Response(buf.getvalue(), media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="{safe}_audit.pdf"'})
+    pdf_suffix = "catalog" if layout_val == "catalog" else "audit"
+    return Response(pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{safe}_{pdf_suffix}.pdf"'})

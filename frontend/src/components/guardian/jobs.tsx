@@ -44,6 +44,7 @@ import {
   Video,
   Mic,
   FileCheck2,
+  Copy,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -74,6 +75,7 @@ import {
   startImageBatch,
   getImageBatchStatus,
   downloadImageBatchReport,
+  downloadHistoryExport,
   fileToResizedDataUrl,
   MAX_BATCH_IMAGES,
   getAuditLogs,
@@ -84,6 +86,17 @@ import {
 } from '@/lib/api';
 import { deriveModality } from '@/lib/modality';
 import { isFallbackString } from '@/lib/fallback';
+import {
+  useHeadingAliases,
+  getDisplayHeading,
+  getCriterionTier,
+  copyTextToClipboard,
+  formatProductCopyBlock,
+  getLocalThumbnail,
+  openPrintablePhotoCatalog,
+  storeLocalThumbnail,
+} from '@/lib/label-utils';
+import { CopyableResultCard, CustomizeColumnsDialog } from './result-cards';
 
 // ----------------------------------------------------------------------------
 // Pre-built Industry Templates for Fast Onboarding
@@ -177,15 +190,26 @@ export function JobsTable({
   search?: string;
 }) {
   const { jobs, folders } = useGuardian();
+  const navigate = useNavigate();
   const [selectedFolder, setSelectedFolder] = useState<string>('All');
   const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<'table' | 'matrix'>('table');
+  const [aliases, setAliases] = useHeadingAliases();
+  const [showCustomizeCols, setShowCustomizeCols] = useState(false);
 
   const items = jobs.filter(
     (j) =>
       (!filter || filter === 'All statuses' || j.status === filter) &&
       (selectedFolder === 'All' || (j.folder_name || 'General Workspace') === selectedFolder) &&
       `${j.name} ${j.id} ${j.type} ${j.folder_name || ''}`.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const detectedHeadings = Array.from(
+    new Set(
+      items.flatMap((j) =>
+        (j.criteria_results || []).map((c: any) => String(c.heading || c.name || '').trim()).filter(Boolean)
+      )
+    )
   );
 
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
@@ -214,27 +238,80 @@ export function JobsTable({
     });
   };
 
-  const handleDownloadSelected = (fmt: 'csv' | 'json') => {
+  const handleDownloadSelected = (fmt: 'csv' | 'json', mode: 'audit' | 'store' = 'audit') => {
     const selectedList = items.filter((j) => selectedJobIds.has(j.id));
     if (selectedList.length === 0) {
       toast.error('No jobs selected.');
       return;
     }
     const safeFolder = selectedFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const safeName = `cypher_label_guard_selected_${safeFolder}_${Date.now()}`;
-    exportJobsBatch(safeName, selectedList, fmt);
-    toast.success(`Downloaded ${selectedList.length} jobs as ${fmt.toUpperCase()}!`);
+    const safeName = `cypher_label_guard_selected_${mode}_${safeFolder}_${Date.now()}`;
+    exportJobsBatch(safeName, selectedList, fmt, { mode, aliases });
+    toast.success(`Downloaded ${selectedList.length} items as ${mode === 'store' ? 'Store CSV' : fmt.toUpperCase()}!`);
   };
 
-  const handleDownloadCurrentBatch = (fmt: 'csv' | 'json') => {
+  const handleDownloadCurrentBatch = (fmt: 'csv' | 'json', mode: 'audit' | 'store' = 'audit') => {
     if (items.length === 0) {
       toast.error('No jobs in this batch / collection to download.');
       return;
     }
     const safeFolder = selectedFolder.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const safeName = `cypher_label_guard_batch_${safeFolder}_${Date.now()}`;
-    exportJobsBatch(safeName, items, fmt);
-    toast.success(`Downloaded ${items.length} jobs in "${selectedFolder}" as ${fmt.toUpperCase()}!`);
+    const safeName = `cypher_label_guard_${mode}_${safeFolder}_${Date.now()}`;
+    exportJobsBatch(safeName, items, fmt, { mode, aliases });
+    toast.success(`Downloaded ${items.length} items in "${selectedFolder}" as ${mode === 'store' ? 'Store CSV' : fmt.toUpperCase()}!`);
+  };
+
+  const handleDownloadCatalogPdf = async (targetList: Job[]) => {
+    if (targetList.length === 0) {
+      toast.error('No jobs selected to export as Catalog PDF.');
+      return;
+    }
+    try {
+      await downloadHistoryExport({
+        folder: selectedFolder !== 'All' ? selectedFolder : undefined,
+        jobIds: targetList.map((j) => j.id),
+        format: 'pdf',
+        layout: 'catalog',
+        aliases,
+        fallbackName: `cypher_catalog_${selectedFolder.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+      });
+      toast.success('Downloaded 1-product-per-page Catalog PDF!');
+    } catch (err: any) {
+      toast.error(err?.message || 'Catalog PDF export failed (opening Photo Print Catalog instead)', {
+        duration: 3500,
+      });
+      handlePrintPhotoCatalog(targetList);
+    }
+  };
+
+  const handlePrintPhotoCatalog = (targetList: Job[]) => {
+    if (targetList.length === 0) {
+      toast.error('No jobs available for photo catalog.');
+      return;
+    }
+    const ok = openPrintablePhotoCatalog(
+      targetList.map((j) => ({
+        name: j.name,
+        folder: j.folder_name || 'General Workspace',
+        thumbnailUrl: getLocalThumbnail(j.name, j.imageUrl, j.id),
+        status: j.status,
+        overall_confidence: j.overall_criteria_confidence,
+        votes: j.affirmative_votes ? `${j.affirmative_votes}/32` : undefined,
+        trace_id: j.trace_id,
+        anomaly_detected: j.anomaly_detected,
+        criteria: (j.criteria_results || []).map((c: any) => ({
+          name: String(c.heading || c.name || ''),
+          value: c.winning_label ?? c.value ?? '',
+          confidence: c.confidence,
+          anomaly: Boolean(c.anomaly),
+        })),
+      })),
+      aliases,
+      `CypherLabelGuard Catalog (${selectedFolder})`
+    );
+    if (!ok) {
+      toast.error('Please allow pop-ups in your browser to view the Printable Photo Catalog.');
+    }
   };
 
   return (
@@ -274,37 +351,76 @@ export function JobsTable({
           </div>
 
           {/* Quick Batch Download & View Mode Toggle */}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
               size="sm"
               variant="default"
               className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm gap-1.5"
-              onClick={() => handleDownloadCurrentBatch('csv')}
-              title="1-Click Download all items in this collection/batch as CSV"
+              onClick={() => handleDownloadCurrentBatch('csv', 'store')}
+              title="Clean Store-Ready CSV (Shopify / Daraz columns only, with custom headings)"
             >
               <Download size={13} />
-              <span>Download Batch ({items.length})</span>
+              <span>Store CSV ({items.length})</span>
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="h-7 text-xs gap-1.5"
+              className="h-7 text-xs gap-1"
+              onClick={() => handleDownloadCurrentBatch('csv', 'audit')}
+              title="Full Verification Audit CSV (with Votes, Confidence % & Trace ID)"
+            >
+              <Download size={12} />
+              <span>Audit CSV</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={() => handleDownloadCatalogPdf(items)}
+              title="Download 1-product-per-page PDF catalog"
+            >
+              <FileText size={12} />
+              <span>Catalog PDF</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={() => handlePrintPhotoCatalog(items)}
+              title="Open 1-page-per-product Photo Catalog for Print / Save PDF"
+            >
+              <Printer size={12} />
+              <span>Photo PDF</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={() => setShowCustomizeCols(true)}
+              title="Rename product headings for Cards, CSV & PDF"
+            >
+              <Sliders size={12} />
+              <span>Columns</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
               onClick={() => handleDownloadCurrentBatch('json')}
               title="1-Click Download all items as JSON"
             >
-              <Download size={13} />
               <span>JSON</span>
             </Button>
-            <div className="h-4 w-px bg-border mx-1" />
+            <div className="h-4 w-px bg-border mx-0.5" />
             <Button
               size="sm"
               variant={viewMode === 'matrix' ? 'secondary' : 'ghost'}
               className="h-7 text-xs gap-1"
               onClick={() => setViewMode((prev) => (prev === 'matrix' ? 'table' : 'matrix'))}
-              title={viewMode === 'matrix' ? 'Switch to Table View' : 'Switch to Batch Inspection Matrix'}
+              title={viewMode === 'matrix' ? 'Switch to Table View' : 'Switch to Copyable Product Cards'}
             >
               <Eye size={13} />
-              <span>{viewMode === 'matrix' ? 'Table View' : 'Batch Matrix View'}</span>
+              <span>{viewMode === 'matrix' ? 'Table View' : 'Product Cards'}</span>
             </Button>
           </div>
         </div>
@@ -312,21 +428,37 @@ export function JobsTable({
 
       {/* Selected Items Floating Action Bar */}
       {selectedJobIds.size > 0 && (
-        <div className="flex items-center justify-between gap-3 p-2.5 rounded-lg bg-primary/10 border border-primary/30 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-primary/10 border border-primary/30 text-xs">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
             <span className="font-semibold text-foreground">
               {selectedJobIds.size} of {items.length} items selected
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
               size="sm"
               variant="default"
               className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white gap-1"
-              onClick={() => handleDownloadSelected('csv')}
+              onClick={() => handleDownloadSelected('csv', 'store')}
             >
-              <Download size={12} /> Download Selected (CSV)
+              <Download size={12} /> Store CSV
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={() => handleDownloadSelected('csv', 'audit')}
+            >
+              <Download size={12} /> Audit CSV
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs gap-1"
+              onClick={() => handleDownloadCatalogPdf(items.filter((j) => selectedJobIds.has(j.id)))}
+            >
+              <FileText size={12} /> Catalog PDF
             </Button>
             <Button
               size="sm"
@@ -334,7 +466,7 @@ export function JobsTable({
               className="h-7 text-xs gap-1"
               onClick={() => handleDownloadSelected('json')}
             >
-              <Download size={12} /> JSON
+              JSON
             </Button>
             <Button
               size="sm"
@@ -348,127 +480,53 @@ export function JobsTable({
         </div>
       )}
 
-      {/* MATRIX VIEW (Side-by-side Batch Inspector) */}
+      {/* MATRIX VIEW (Copyable Product Result Cards) */}
       {viewMode === 'matrix' && !compact ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5 pt-1">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3.5 pt-1">
           {items.slice(0, 100).map((job) => {
             const isSelected = selectedJobIds.has(job.id);
             return (
               <div
                 key={job.id}
-                className={`rounded-xl border p-3.5 transition-all flex flex-col justify-between ${isSelected
-                    ? 'border-primary bg-primary/5 shadow-md shadow-primary/10'
-                    : 'border-border bg-card hover:border-border/80 hover:shadow-sm'
-                  }`}
+                className={`rounded-xl border p-2.5 transition-all flex flex-col gap-2 ${
+                  isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary/40' : 'border-transparent'
+                }`}
               >
-                <div>
-                  {/* Top Row: Checkbox, Thumbnail, Job Info */}
-                  <div className="flex items-start gap-3 mb-2.5">
+                <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => toggleSelectJob(job.id)}
-                      className="mt-1 rounded border-border text-primary focus:ring-primary h-4 w-4 cursor-pointer"
+                      className="rounded border-border text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
                     />
-                    {job.imageUrl ? (
-                      <img
-                        src={job.imageUrl}
-                        alt={job.name}
-                        className="w-12 h-12 rounded-lg object-cover border border-primary/30 shrink-0 shadow-sm"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center shrink-0 border border-border">
-                        <DataIcon type={job.type} />
-                      </div>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-1">
-                        <Link
-                          to="/jobs/$jobId"
-                          params={{ jobId: job.id }}
-                          className="font-semibold text-xs text-foreground hover:text-primary truncate block"
-                          title={job.name}
-                        >
-                          {job.name}
-                        </Link>
-                        <Link
-                          to="/jobs/$jobId"
-                          params={{ jobId: job.id }}
-                          className="text-muted-foreground hover:text-primary shrink-0"
-                          title="Open Job Studio"
-                        >
-                          <ArrowUpRight size={13} />
-                        </Link>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground font-mono mt-0.5">
-                        <span>#{job.id}</span>
-                        <span>·</span>
-                        <span className="truncate">{job.folder_name || 'General Workspace'}</span>
-                      </div>
-                      <div className="mt-1 flex items-center gap-1.5">
-                        <Status status={job.status} />
-                        {job.overall_criteria_confidence !== undefined && (
-                          <span className="font-mono text-[10px] text-primary font-semibold">
-                            {job.overall_criteria_confidence}% conf
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Criteria / Headings Pills Matrix */}
-                  <div className="mt-2 pt-2 border-t border-border/60">
-                    <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 flex items-center justify-between">
-                      <span>Dynamic Headings ({job.criteria_results?.length || 0})</span>
-                      <span className="text-[9px] text-primary font-mono">{job.affirmative_votes || 32}/32 votes</span>
-                    </div>
-                    {job.criteria_results && job.criteria_results.length > 0 ? (
-                      <div className="space-y-1 max-h-48 overflow-y-auto pr-0.5">
-                        {job.criteria_results.map((c: any, i: number) => {
-                          const hName = c.heading || c.name || `Heading ${i + 1}`;
-                          const hVal = c.winning_label || c.value || 'Unspecified';
-                          const isReject = String(hVal).includes('REJECT') || c.anomaly;
-                          return (
-                            <div
-                              key={i}
-                              className={`px-2 py-1 rounded text-[11px] font-mono border flex items-center justify-between gap-2 ${isReject
-                                  ? 'bg-destructive/10 text-destructive border-destructive/30'
-                                  : 'bg-background/80 text-foreground border-border/70'
-                                }`}
-                            >
-                              <span className="text-muted-foreground truncate shrink-0 max-w-[45%] font-medium">
-                                {hName}:
-                              </span>
-                              <span className="font-semibold truncate text-right flex-1" title={String(hVal)}>
-                                {String(hVal)}
-                              </span>
-                              {c.confidence !== undefined && (
-                                <span className="text-[10px] text-primary shrink-0 opacity-80">
-                                  {c.confidence}%
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-[11px] text-muted-foreground italic">Standard multi-dimensional consensus</p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Footer: Single Job 1-Click Export */}
-                <div className="mt-3 pt-2 border-t border-border/40 flex items-center justify-between text-[10px] text-muted-foreground">
-                  <span>{job.created}</span>
+                    <span className="font-mono">#{job.id} · {job.created}</span>
+                  </label>
                   <button
                     type="button"
-                    onClick={() => exportJobsBatch(`job_${job.id}_results`, [job], 'csv')}
-                    className="text-primary hover:underline flex items-center gap-1 font-medium"
-                    title="Download this single photo result as CSV"
+                    onClick={() => exportJobsBatch(`job_${job.id}_store`, [job], 'csv', { mode: 'store', aliases })}
+                    className="text-emerald-400 hover:underline flex items-center gap-1 font-medium"
                   >
-                    <Download size={11} /> CSV
+                    <Download size={11} /> Store CSV
                   </button>
                 </div>
+                <CopyableResultCard
+                  title={job.name}
+                  subtitle={`${job.folder_name || 'General Workspace'} · ${job.type}`}
+                  thumbnailUrl={job.imageUrl}
+                  secondaryThumbKey={job.id}
+                  status={job.status}
+                  overallConfidence={job.overall_criteria_confidence}
+                  votes={job.affirmative_votes ? `${job.affirmative_votes}/32` : undefined}
+                  traceId={job.trace_id}
+                  lineageHash={job.lineage_hash}
+                  anomalyDetected={job.anomaly_detected}
+                  criteria={job.criteria_results || []}
+                  aliases={aliases}
+                  compact
+                  onOpenFull={() => navigate({ to: '/jobs/$jobId', params: { jobId: job.id } })}
+                  onPrintCatalog={() => handlePrintPhotoCatalog([job])}
+                />
               </div>
             );
           })}
@@ -640,66 +698,24 @@ export function JobsTable({
                     {/* Collapsible Accordion Drawer Row */}
                     {isExpanded && (
                       <tr className="bg-muted/20 border-b border-border">
-                        <td colSpan={compact ? 9 : 10} className="p-4 pt-2">
-                          <div className="p-3.5 rounded-lg bg-card border border-border space-y-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
-                              <div className="flex items-center gap-2">
-                                <span className="font-semibold text-xs text-foreground">
-                                  Job #{job.id} Quick Inspection
-                                </span>
-                                <span className="text-[11px] font-mono text-muted-foreground">
-                                  ({job.created})
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  className="text-xs h-7 gap-1"
-                                  onClick={() => exportJobsBatch(`job_${job.id}_results`, [job], 'csv')}
-                                >
-                                  <Download size={11} /> Download CSV
-                                </Button>
-                                <Button asChild size="sm" variant="default" className="text-xs h-7">
-                                  <Link to="/jobs/$jobId" params={{ jobId: job.id }}>
-                                    Open Full Studio <ArrowUpRight size={12} className="ml-1" />
-                                  </Link>
-                                </Button>
-                              </div>
-                            </div>
-
-                            {/* Criteria / Headings Summary */}
-                            {job.criteria_results && job.criteria_results.length > 0 ? (
-                              <div>
-                                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
-                                  Dynamic Headings & Consensus Results:
-                                </span>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {job.criteria_results.map((c: any, i: number) => {
-                                    const hName = c.heading || c.name || `Heading ${i + 1}`;
-                                    const hVal = c.winning_label || c.value || '';
-                                    return (
-                                      <span
-                                        key={i}
-                                        className="px-2 py-0.5 rounded text-[11px] font-mono bg-background border border-border flex items-center gap-1.5"
-                                      >
-                                        <span className="text-muted-foreground">{hName}:</span>
-                                        <b className="text-foreground">{hVal}</b>
-                                        {c.confidence !== undefined && (
-                                          <span className="text-primary text-[10px]">({c.confidence}%)</span>
-                                        )}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="text-xs text-muted-foreground">
-                                Standard multi-dimensional consensus voting completed across 4 models.
-                              </p>
-                            )}
-                          </div>
+                        <td colSpan={compact ? 9 : 10} className="p-3.5 pt-2">
+                          <CopyableResultCard
+                            title={job.name}
+                            subtitle={`Job #${job.id} · ${job.folder_name || 'General Workspace'} · ${job.created}`}
+                            thumbnailUrl={job.imageUrl}
+                            secondaryThumbKey={job.id}
+                            status={job.status}
+                            overallConfidence={job.overall_criteria_confidence}
+                            votes={job.affirmative_votes ? `${job.affirmative_votes}/32` : undefined}
+                            traceId={job.trace_id}
+                            lineageHash={job.lineage_hash}
+                            anomalyDetected={job.anomaly_detected}
+                            criteria={job.criteria_results || []}
+                            aliases={aliases}
+                            compact
+                            onOpenFull={() => navigate({ to: '/jobs/$jobId', params: { jobId: job.id } })}
+                            onPrintCatalog={() => handlePrintPhotoCatalog([job])}
+                          />
                         </td>
                       </tr>
                     )}
@@ -715,6 +731,13 @@ export function JobsTable({
           )}
         </div>
       )}
+      <CustomizeColumnsDialog
+        open={showCustomizeCols}
+        onClose={() => setShowCustomizeCols(false)}
+        headings={detectedHeadings}
+        aliases={aliases}
+        onSave={setAliases}
+      />
     </div>
   );
 }
@@ -726,6 +749,7 @@ export function JobsScreen() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All statuses');
   const { jobs } = useGuardian();
+  const [aliases] = useHeadingAliases();
 
   return (
     <>
@@ -747,7 +771,27 @@ export function JobsScreen() {
         title="All jobs"
         icon={<Layers />}
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="default"
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              onClick={() => {
+                if (jobs.length === 0) {
+                  toast.error('No jobs to download.');
+                  return;
+                }
+                exportJobsBatch(`cypher_label_guard_store_${Date.now()}`, jobs, 'csv', {
+                  mode: 'store',
+                  aliases,
+                });
+                toast.success(`Downloaded Store-Ready CSV for ${jobs.length} items!`);
+              }}
+              title="Download clean Shopify / Daraz ready CSV with custom column headings"
+            >
+              <Download size={13} className="mr-1.5" />
+              Store CSV
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -756,13 +800,16 @@ export function JobsScreen() {
                   toast.error('No jobs to download.');
                   return;
                 }
-                exportJobsBatch(`cypher_label_guard_all_batch_results_${Date.now()}`, jobs, 'csv');
-                toast.success(`Downloaded all ${jobs.length} jobs as CSV!`);
+                exportJobsBatch(`cypher_label_guard_all_batch_results_${Date.now()}`, jobs, 'csv', {
+                  mode: 'audit',
+                  aliases,
+                });
+                toast.success(`Downloaded all ${jobs.length} jobs as Audit CSV!`);
               }}
-              title="1-Click Download all jobs with unpacked criteria headings as CSV"
+              title="1-Click Download all jobs with confidence % and audit trace as CSV"
             >
               <Download size={13} className="mr-1.5" />
-              Download All (CSV)
+              Audit CSV
             </Button>
             <Button
               variant="ghost"
@@ -772,7 +819,9 @@ export function JobsScreen() {
                   toast.error('No jobs to download.');
                   return;
                 }
-                exportJobsBatch(`cypher_label_guard_all_batch_results_${Date.now()}`, jobs, 'json');
+                exportJobsBatch(`cypher_label_guard_all_batch_results_${Date.now()}`, jobs, 'json', {
+                  aliases,
+                });
                 toast.success(`Downloaded all ${jobs.length} jobs as JSON!`);
               }}
               title="1-Click Download all jobs as JSON"
@@ -977,19 +1026,76 @@ function ImageBatchModal({
   onClose: () => void;
   onOpenFolder: () => void;
 }) {
+  const [aliases, setAliases] = useHeadingAliases();
+  const [showCustomizeCols, setShowCustomizeCols] = useState(false);
+
   if (!status && !preparing) return null;
   const finished = status && status.status !== 'PROCESSING';
-  const download = async (fmt: 'csv' | 'json' | 'pdf') => {
+
+  const detectedHeadings = status
+    ? Array.from(
+        new Set(
+          status.items.flatMap((it) =>
+            (it.criteria_results || [])
+              .map((c: any) => String(c.name || c.heading || '').trim())
+              .filter(Boolean)
+          )
+        )
+      )
+    : [];
+
+  const download = async (
+    fmt: 'csv' | 'json' | 'pdf',
+    mode: 'audit' | 'store' = 'audit',
+    layout: 'catalog' | 'table' = 'catalog'
+  ) => {
     if (!status) return;
     try {
-      await downloadImageBatchReport(status.batch_id, fmt);
+      await downloadImageBatchReport(status.batch_id, fmt, { mode, layout, aliases });
+      toast.success(
+        fmt === 'pdf'
+          ? 'Downloaded 1-product-per-page Catalog PDF!'
+          : fmt === 'csv' && mode === 'store'
+          ? 'Downloaded Store-Ready CSV!'
+          : `Downloaded ${fmt.toUpperCase()} report!`
+      );
     } catch (err: any) {
       toast.error(err.message);
     }
   };
+
+  const handlePrintPhotoCatalog = () => {
+    if (!status || status.items.length === 0) return;
+    const ok = openPrintablePhotoCatalog(
+      status.items.map((it) => ({
+        name: it.name,
+        folder: status.folder_name,
+        thumbnailUrl: getLocalThumbnail(it.name),
+        status: it.status,
+        decision: it.decision,
+        overall_confidence: it.overall_confidence,
+        votes: it.votes,
+        trace_id: it.trace_id,
+        lineage_hash: it.lineage_hash,
+        error: it.error,
+        criteria: (it.criteria_results || []).map((c: any) => ({
+          name: String(c.name || c.heading || ''),
+          value: c.value ?? c.winning_label ?? '',
+          confidence: c.confidence,
+          anomaly: Boolean(c.anomaly),
+        })),
+      })),
+      aliases,
+      `${status.name} — Photo Catalog`
+    );
+    if (!ok) {
+      toast.error('Please allow pop-ups in your browser to preview and print the Photo Catalog PDF.');
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[100] bg-background/90 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
+      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-2xl border border-border bg-card p-6 shadow-2xl">
         {!status ? (
           <div className="text-center py-10">
             <div className="w-14 h-14 mx-auto mb-4 rounded-full border-4 border-primary/30 border-t-primary animate-spin" />
@@ -998,18 +1104,31 @@ function ImageBatchModal({
           </div>
         ) : (
           <>
-            <div className="flex items-start justify-between mb-3">
+            <div className="flex items-start justify-between gap-3 mb-3">
               <div>
                 <h3 className="text-base font-bold">{status.name}</h3>
                 <p className="text-xs text-muted-foreground">
-                  Folder: <b className="text-foreground">{status.folder_name}</b> · {status.concurrency} photos inspected in parallel by the 4-model Parliament
+                  Collection: <b className="text-foreground">{status.folder_name}</b> · {status.concurrency} photos labeled in parallel
                 </p>
               </div>
-              {finished && (
-                <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close">
-                  <X size={16} />
-                </Button>
-              )}
+              <div className="flex items-center gap-1.5">
+                {detectedHeadings.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => setShowCustomizeCols(true)}
+                  >
+                    <Sliders size={12} />
+                    Customize Columns
+                  </Button>
+                )}
+                {finished && (
+                  <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close">
+                    <X size={16} />
+                  </Button>
+                )}
+              </div>
             </div>
 
             <div className="w-full bg-secondary/80 rounded-full h-2.5 mb-2 overflow-hidden border border-border">
@@ -1023,38 +1142,42 @@ function ImageBatchModal({
               <span>{status.elapsed_seconds}s elapsed</span>
             </div>
 
-            <div className="space-y-2 mb-4 max-h-72 overflow-y-auto pr-1">
-              {status.items.map((it) => (
-                <div key={it.index} className="border border-border/70 rounded-lg p-2 bg-card/60 transition-all hover:border-primary/40">
-                  <div className="flex items-center gap-2 text-xs">
-                    <span
-                      className={`w-2.5 h-2.5 rounded-full shrink-0 ${it.status === 'COMPLETED' ? 'bg-success' : it.status === 'FAILED' ? 'bg-destructive' : it.status === 'RUNNING' ? 'bg-amber-400 animate-pulse' : 'bg-muted-foreground/40'
+            <div className="space-y-3 mb-4 max-h-[54vh] overflow-y-auto pr-1">
+              {status.items.map((it) => {
+                if (it.status === 'QUEUED' || it.status === 'RUNNING') {
+                  return (
+                    <div key={it.index} className="border border-border/70 rounded-lg p-2.5 bg-card/60 flex items-center gap-2 text-xs">
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                          it.status === 'RUNNING' ? 'bg-amber-400 animate-pulse' : 'bg-muted-foreground/40'
                         }`}
-                    />
-                    <span className="truncate flex-1 font-medium">{it.name}</span>
-                    {it.status === 'COMPLETED' && (
-                      <span className="font-mono text-[10px] text-success font-semibold px-1.5 py-0.5 rounded bg-success/10 border border-success/20">
-                        {it.overall_confidence ?? '-'}% · {it.votes}
+                      />
+                      <span className="truncate flex-1 font-medium">{it.name}</span>
+                      <span className="text-[11px] text-muted-foreground font-mono">
+                        {it.status === 'RUNNING' ? 'Generating content...' : 'Queued'}
                       </span>
-                    )}
-                    {it.status === 'FAILED' && (
-                      <span className="text-[10px] text-destructive truncate max-w-[45%]" title={it.error}>{it.error}</span>
-                    )}
-                    {(it.status === 'QUEUED' || it.status === 'RUNNING') && (
-                      <span className="text-[10px] text-muted-foreground font-mono">{it.status === 'RUNNING' ? 'voting...' : 'queued'}</span>
-                    )}
-                  </div>
-                  {it.status === 'COMPLETED' && it.criteria_results && it.criteria_results.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5 pl-4 pt-1 border-t border-border/40">
-                      {it.criteria_results.map((c: any, ci: number) => (
-                        <span key={ci} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted text-foreground border border-border/60">
-                          <span className="text-muted-foreground">{c.name || c.heading}:</span> <b className="text-foreground">{c.value || c.winning_label}</b>
-                        </span>
-                      ))}
                     </div>
-                  )}
-                </div>
-              ))}
+                  );
+                }
+
+                return (
+                  <CopyableResultCard
+                    key={it.index}
+                    title={it.name}
+                    subtitle={`Collection: ${status.folder_name}`}
+                    status={it.status}
+                    decision={it.decision}
+                    overallConfidence={it.overall_confidence}
+                    votes={it.votes}
+                    traceId={it.trace_id}
+                    lineageHash={it.lineage_hash}
+                    error={it.error}
+                    criteria={it.criteria_results || []}
+                    aliases={aliases}
+                    compact
+                  />
+                );
+              })}
             </div>
 
             {finished ? (
@@ -1062,24 +1185,32 @@ function ImageBatchModal({
                 <p className="text-xs text-muted-foreground">
                   {status.status === 'FAILED'
                     ? 'No photo reached consensus. Nothing was charged. Check your AI provider keys and try again.'
-                    : `Batch inspection finished. ${status.credits_charged.toLocaleString()} credits charged for ${status.total - status.failed} labeled photos.`}
+                    : `Ready to use! ${status.total - status.failed} product${status.total - status.failed === 1 ? '' : 's'} labeled (${status.credits_charged.toLocaleString()} credits used). Copy fields above or export below.`}
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     size="sm"
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-md px-3.5"
-                    onClick={() => download('csv')}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-md px-3.5 gap-1.5"
+                    onClick={() => download('csv', 'store')}
                   >
-                    <Download size={14} className="mr-1.5" />
-                    Download Entire Batch (1-Click CSV)
+                    <Download size={14} />
+                    Store CSV (Shopify / Daraz)
+                  </Button>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => download('csv', 'audit')}>
+                    <Download size={13} />
+                    Full Audit CSV
+                  </Button>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => download('pdf', 'audit', 'catalog')}>
+                    <FileText size={13} />
+                    Catalog PDF (1/Page)
+                  </Button>
+                  <Button size="sm" variant="outline" className="gap-1.5" onClick={handlePrintPhotoCatalog}>
+                    <Printer size={13} />
+                    Photo Print PDF
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => download('json')}>
                     <Download size={13} className="mr-1.5" />
                     JSON
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => download('pdf')}>
-                    <Download size={13} className="mr-1.5" />
-                    PDF
                   </Button>
                   <Button size="sm" variant="ghost" className="ml-auto" onClick={onOpenFolder}>
                     <Folder size={13} className="mr-1.5" />
@@ -1088,11 +1219,18 @@ function ImageBatchModal({
                 </div>
               </div>
             ) : (
-              <p className="text-[11px] text-muted-foreground">Keep this window open. Reports unlock when every photo finishes.</p>
+              <p className="text-[11px] text-muted-foreground">Keep this window open. Export buttons unlock as soon as all photos finish.</p>
             )}
           </>
         )}
       </div>
+      <CustomizeColumnsDialog
+        open={showCustomizeCols}
+        onClose={() => setShowCustomizeCols(false)}
+        headings={detectedHeadings}
+        aliases={aliases}
+        onSave={setAliases}
+      />
     </div>
   );
 }
@@ -3002,7 +3140,11 @@ function VisionLabeledImageStudio({
   criteriaResults?: CriterionResult[];
   hasAnomaly?: boolean;
 }) {
-  const [viewMode, setViewMode] = useState<'canvas' | 'specsheet' | 'certificate'>('canvas');
+  const [viewMode, setViewMode] = useState<'canvas' | 'specsheet' | 'certificate'>('specsheet');
+  const [aliases, setAliases] = useHeadingAliases();
+  const [showCustomizeCols, setShowCustomizeCols] = useState(false);
+  const [copiedSpecIdx, setCopiedSpecIdx] = useState<number | null>(null);
+  const [copiedAllSpec, setCopiedAllSpec] = useState(false);
   const [showBoxes, setShowBoxes] = useState(true);
   const [activeBoxIdx, setActiveBoxIdx] = useState<number | null>(null);
 
@@ -3252,26 +3394,96 @@ function VisionLabeledImageStudio({
               {/* Right Column: Factory Product Spec Sheet Table */}
               <div className="lg:col-span-7 space-y-4">
                 <div className="p-4 rounded-xl bg-card border border-border space-y-3">
-                  <div className="flex items-center justify-between border-b border-border pb-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
                     <div>
                       <h4 className="text-sm font-bold text-foreground flex items-center gap-1.5">
                         <FileText size={15} className="text-primary" />
                         Factory Product Spec Sheet (Dynamic Criteria)
                       </h4>
                       <p className="text-[11px] text-muted-foreground mt-0.5">
-                        Labels synthesized via 4-Model Parliamentary Consensus across your specified headings.
+                        Ready-to-copy product labels across your specified headings. Click any row or Copy button.
                       </p>
                     </div>
-                    <span
-                      className={`px-2.5 py-1 rounded text-xs font-mono font-bold border ${isDiscordantQA
-                          ? 'bg-amber-500/15 text-amber-500 border-amber-500/30'
-                          : isAnomaly
-                            ? 'bg-destructive/15 text-destructive border-destructive/30'
-                            : 'bg-success/15 text-success border-success/30'
-                        }`}
-                    >
-                      {isDiscordantQA ? 'DISCORDANT · LOW CONFIDENCE' : (isAnomaly ? 'REJECTED · 0.0%' : '✓ 100% Concordance')}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {effectiveCriteria.length > 0 && (
+                        <>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={copiedAllSpec ? 'default' : 'outline'}
+                            className={`h-7 px-2.5 text-[11px] gap-1 ${copiedAllSpec ? 'bg-emerald-600 text-white' : ''}`}
+                            onClick={async () => {
+                              const block = formatProductCopyBlock(
+                                effectiveCriteria.map((c) => ({ heading: c.name, value: c.value })),
+                                aliases
+                              );
+                              if (!block) return;
+                              if (await copyTextToClipboard(block)) {
+                                setCopiedAllSpec(true);
+                                toast.success('Copied all product fields!');
+                                setTimeout(() => setCopiedAllSpec(false), 1800);
+                              }
+                            }}
+                          >
+                            {copiedAllSpec ? <Check size={12} /> : <Copy size={12} />}
+                            {copiedAllSpec ? 'Copied All' : 'Copy All'}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-[11px] gap-1"
+                            onClick={() => setShowCustomizeCols(true)}
+                          >
+                            <Sliders size={11} />
+                            Columns
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-[11px] gap-1"
+                            onClick={() => {
+                              openPrintablePhotoCatalog(
+                                [
+                                  {
+                                    name: job.name,
+                                    folder: job.folder_name || 'General Workspace',
+                                    thumbnailUrl: displayImgUrl,
+                                    status: job.status,
+                                    overall_confidence: job.overall_criteria_confidence,
+                                    votes: job.affirmative_votes ? `${job.affirmative_votes}/32` : undefined,
+                                    trace_id: job.trace_id,
+                                    anomaly_detected: isAnomaly,
+                                    criteria: effectiveCriteria.map((c) => ({
+                                      name: c.name,
+                                      value: c.value,
+                                      confidence: c.confidence,
+                                      anomaly: Boolean(c.anomaly),
+                                    })),
+                                  },
+                                ],
+                                aliases,
+                                `${job.name} — Product Sheet`
+                              );
+                            }}
+                          >
+                            <Printer size={11} />
+                            Photo PDF
+                          </Button>
+                        </>
+                      )}
+                      <span
+                        className={`px-2.5 py-1 rounded text-xs font-mono font-bold border ${isDiscordantQA
+                            ? 'bg-amber-500/15 text-amber-500 border-amber-500/30'
+                            : isAnomaly
+                              ? 'bg-destructive/15 text-destructive border-destructive/30'
+                              : 'bg-success/15 text-success border-success/30'
+                          }`}
+                      >
+                        {isDiscordantQA ? 'DISCORDANT · LOW CONFIDENCE' : (isAnomaly ? 'REJECTED · 0.0%' : '✓ 100% Concordance')}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Spec Sheet Criteria Table */}
@@ -3285,6 +3497,7 @@ function VisionLabeledImageStudio({
                             <th>Verified Value</th>
                             <th>Consensus Agreement</th>
                             <th className="text-right">Confidence</th>
+                            <th className="text-right">Copy</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3295,6 +3508,13 @@ function VisionLabeledImageStudio({
                               String(c.value).includes('ANOMALY') ||
                               String(c.value).toLowerCase().includes('ftyp') ||
                               Number(c.confidence) === 0;
+                            const cTier = getCriterionTier({
+                              confidence: c.confidence,
+                              anomaly: isCritAnom,
+                              value: c.value,
+                            });
+                            const dispName = getDisplayHeading(c.name, aliases);
+                            const isRowCopied = copiedSpecIdx === i;
 
                             return (
                               <tr
@@ -3303,12 +3523,12 @@ function VisionLabeledImageStudio({
                                   setActiveBoxIdx(activeBoxIdx === i ? null : i);
                                   setViewMode('canvas');
                                 }}
-                                className={`hover:bg-muted/40 cursor-pointer transition-colors ${activeBoxIdx === i ? 'bg-primary/20 border-l-4 border-primary font-semibold' : ''} ${isCritAnom ? 'bg-destructive/10 border-l-2 border-destructive' : ''}`}
+                                className={`hover:bg-muted/40 cursor-pointer transition-colors ${activeBoxIdx === i ? 'bg-primary/20 border-l-4 border-primary font-semibold' : ''} ${isCritAnom ? 'bg-destructive/10 border-l-2 border-destructive' : cTier.tier === 'amber' ? 'bg-amber-500/[0.06] border-l-2 border-amber-500' : 'border-l-2 border-emerald-500/50'}`}
                                 title={`Click to locate '${c.name}' bounding box on Image Canvas`}
                               >
                                 <td className="font-semibold text-foreground flex items-center gap-1.5">
-                                  <span className={`w-1.5 h-1.5 rounded-full ${isCritAnom ? 'bg-destructive' : 'bg-primary'}`} />
-                                  {c.name}
+                                  <span className={`w-1.5 h-1.5 rounded-full ${cTier.dotClass}`} />
+                                  <span title={dispName !== c.name ? `Original key: ${c.name}` : undefined}>{dispName}</span>
                                 </td>
                                 <td>
                                   <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted text-muted-foreground border border-border">
@@ -3322,16 +3542,38 @@ function VisionLabeledImageStudio({
                                       {String(c.value)}
                                     </span>
                                   ) : (
-                                    String(c.value)
+                                    <span className="whitespace-pre-wrap break-words">{String(c.value)}</span>
                                   )}
                                 </td>
                                 <td className="text-muted-foreground text-[11px]">
                                   {c.agreement || (isCritAnom ? '0 of 4 APIs (Rejected)' : 'Not reported')}
                                 </td>
                                 <td className="text-right">
-                                  <span className={`font-mono font-semibold ${isCritAnom ? 'text-destructive' : 'text-success'}`}>
+                                  <span className={`font-mono font-semibold ${isCritAnom ? 'text-destructive' : cTier.tier === 'amber' ? 'text-amber-400' : 'text-success'}`}>
                                     {isCritAnom ? '0.0%' : `${c.confidence ?? 0}%`}
                                   </span>
+                                </td>
+                                <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                                  <button
+                                    type="button"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      const val = String(c.value ?? '');
+                                      if (await copyTextToClipboard(val)) {
+                                        setCopiedSpecIdx(i);
+                                        toast.success(`Copied ${dispName}`);
+                                        setTimeout(() => setCopiedSpecIdx((cur) => (cur === i ? null : cur)), 1600);
+                                      }
+                                    }}
+                                    className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10.5px] font-medium ${
+                                      isRowCopied
+                                        ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300'
+                                        : 'border-border bg-background/80 hover:bg-muted text-muted-foreground hover:text-foreground'
+                                    }`}
+                                  >
+                                    {isRowCopied ? <Check size={10} /> : <Copy size={10} />}
+                                    {isRowCopied ? 'Copied' : 'Copy'}
+                                  </button>
                                 </td>
                               </tr>
                             );
@@ -3735,6 +3977,13 @@ function VisionLabeledImageStudio({
           </div>
         )}
       </div>
+      <CustomizeColumnsDialog
+        open={showCustomizeCols}
+        onClose={() => setShowCustomizeCols(false)}
+        headings={effectiveCriteria.map((c) => c.name).filter(Boolean)}
+        aliases={aliases}
+        onSave={setAliases}
+      />
     </Panel>
   );
 }
@@ -3745,6 +3994,8 @@ function VisionLabeledImageStudio({
 export function JobDetailScreen({ jobId }: { jobId: string }) {
   const { jobs, updateJob, latestInference, refreshJobs } = useGuardian();
   const [tab, setTab] = useState('Overview');
+  const [aliases, setAliases] = useHeadingAliases();
+  const [showExportCols, setShowExportCols] = useState(false);
   const [expandedVoteIdx, setExpandedVoteIdx] = useState<number | null>(null);
 
   // Batch Status Polling State
@@ -4414,28 +4665,117 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
         <ParliamentFeed />
       ) : tab === 'Export' ? (
         <Panel title="Export results">
-          <div className="panel-body">
-            <p className="text-muted-foreground mb-5">
-              Download the confidence-scored labels with your custom dynamic headings.
+          <div className="panel-body space-y-4">
+            <p className="text-muted-foreground">
+              Download store-ready content or full forensic audit dossiers with your customized display headings.
             </p>
-            <div className="flex gap-3">
-              {['CSV', 'JSON'].map((format) => (
-                <Button
-                  key={format}
-                  variant="outline"
-                  onClick={() =>
-                    exportFile(
-                      `job-${job.id}-results.${format.toLowerCase()}`,
-                      dynamicResults,
-                      format === 'CSV'
-                    )
+            <div className="flex flex-wrap gap-2.5">
+              <Button
+                className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
+                onClick={() => exportJobsBatch(`job-${job.id}-store`, [job], 'csv', { mode: 'store', aliases })}
+              >
+                <Download size={14} />
+                Store CSV (Shopify / Daraz)
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => exportJobsBatch(`job-${job.id}-audit`, [job], 'csv', { mode: 'audit', aliases })}
+              >
+                <Download size={14} className="mr-1.5" />
+                Full Audit CSV
+              </Button>
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await downloadHistoryExport({
+                      jobIds: [job.id],
+                      format: 'pdf',
+                      layout: 'catalog',
+                      aliases,
+                      fallbackName: `job_${job.id}_catalog`,
+                    });
+                    toast.success('Downloaded Catalog PDF!');
+                  } catch {
+                    openPrintablePhotoCatalog(
+                      [
+                        {
+                          name: job.name,
+                          folder: job.folder_name || 'General Workspace',
+                          thumbnailUrl: getLocalThumbnail(job.name, job.imageUrl, job.id),
+                          status: job.status,
+                          overall_confidence: overallConfidence,
+                          votes: job.affirmative_votes ? `${job.affirmative_votes}/32` : undefined,
+                          trace_id: job.trace_id,
+                          anomaly_detected: hasAnomaly,
+                          criteria: (dynamicResults || []).map((c: any) => ({
+                            name: String(c.heading || c.name || ''),
+                            value: c.winning_label ?? c.value ?? '',
+                            confidence: c.confidence,
+                            anomaly: Boolean(c.anomaly),
+                          })),
+                        },
+                      ],
+                      aliases,
+                      `${job.name} — Catalog`
+                    );
                   }
-                >
-                  <Download />
-                  {format}
-                </Button>
-              ))}
+                }}
+              >
+                <FileText size={14} className="mr-1.5" />
+                Catalog PDF (1/Page)
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  openPrintablePhotoCatalog(
+                    [
+                      {
+                        name: job.name,
+                        folder: job.folder_name || 'General Workspace',
+                        thumbnailUrl: getLocalThumbnail(job.name, job.imageUrl, job.id),
+                        status: job.status,
+                        overall_confidence: overallConfidence,
+                        votes: job.affirmative_votes ? `${job.affirmative_votes}/32` : undefined,
+                        trace_id: job.trace_id,
+                        anomaly_detected: hasAnomaly,
+                        criteria: (dynamicResults || []).map((c: any) => ({
+                          name: String(c.heading || c.name || ''),
+                          value: c.winning_label ?? c.value ?? '',
+                          confidence: c.confidence,
+                          anomaly: Boolean(c.anomaly),
+                        })),
+                      },
+                    ],
+                    aliases,
+                    `${job.name} — Photo Catalog`
+                  );
+                }}
+              >
+                <Printer size={14} className="mr-1.5" />
+                Photo Print PDF
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  exportFile(`job-${job.id}-results.json`, dynamicResults, false)
+                }
+              >
+                <Download size={14} className="mr-1.5" />
+                JSON
+              </Button>
+              <Button variant="outline" onClick={() => setShowExportCols(true)}>
+                <Sliders size={14} className="mr-1.5" />
+                Customize Columns
+              </Button>
             </div>
+            <CustomizeColumnsDialog
+              open={showExportCols}
+              onClose={() => setShowExportCols(false)}
+              headings={(dynamicResults || []).map((c: any) => String(c.heading || c.name || '')).filter(Boolean)}
+              aliases={aliases}
+              onSave={setAliases}
+            />
           </div>
         </Panel>
       ) : tab === 'Labels' ? (

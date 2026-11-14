@@ -15,6 +15,13 @@ from db.database import get_db
 from db.models import User, JobRecord, AuditLogEntry, FolderRecord
 from pydantic import BaseModel, Field
 from api.auth_routes import get_current_user, get_optional_current_user
+from api.export_utils import (
+    build_catalog_pdf_bytes,
+    parse_column_aliases,
+    render_csv_text,
+    resolve_display_heading,
+    unwrap_query_param,
+)
 
 router = APIRouter(prefix="/api/v2/history", tags=["Job History & Audit Logs"])
 
@@ -166,15 +173,23 @@ def _sanitize_csv_cell(val: Any) -> Any:
 def export_jobs_batch(
     folder: Optional[str] = Query(None, description="Filter by folder/collection name"),
     job_ids: Optional[str] = Query(None, description="Comma-separated job numbers or IDs"),
-    format: str = Query("csv", pattern="^(csv|json)$"),
+    format: str = Query("csv", pattern="^(csv|json|pdf)$"),
     user: Optional[User] = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
+    mode: str = Query("audit", pattern="^(audit|store)$"),
+    layout: str = Query("catalog", pattern="^(catalog|table)$"),
+    aliases: Optional[str] = Query(None, description="Optional JSON map of original heading -> custom display heading"),
 ):
     """
-    1-Click Bulk Export of entire image batches or folders into CSV or JSON.
-    Unpacks all dynamic criteria headings (e.g. product name, color, edible, human, count)
-    into clean, dedicated tabular columns.
+    1-Click Bulk Export of entire image batches or folders into CSV, JSON, or Catalog PDF.
+    Supports Store-Ready clean CSV (`mode=store`), Audit CSV (`mode=audit`), custom heading aliases,
+    and 1-product-per-page Catalog PDF (`layout=catalog`).
     """
+    mode_val = str(unwrap_query_param(mode, "audit") or "audit").lower()
+    layout_val = str(unwrap_query_param(layout, "catalog") or "catalog").lower()
+    aliases_val = unwrap_query_param(aliases, None)
+    alias_map = parse_column_aliases(aliases_val if isinstance(aliases_val, str) else None)
+
     query = db.query(JobRecord)
     if user:
         if getattr(user, "role", None) != "Administrator":
@@ -195,7 +210,6 @@ def export_jobs_batch(
     if not records:
         raise HTTPException(status_code=404, detail="No matching jobs found for export.")
 
-    # Parse criteria and determine all unique criteria headings
     parsed_jobs = []
     all_headings: List[str] = []
 
@@ -211,12 +225,17 @@ def export_jobs_batch(
                     "confidence": c.get("confidence", 0),
                     "anomaly": c.get("anomaly", False),
                 }
-                # Alphanumeric deduplication so 'is this edible?' and 'is this edible' don't create split columns
-                norm_h = re.sub(r'[^a-z0-9]', '', h_name.lower())
-                existing = next((x for x in all_headings if re.sub(r'[^a-z0-9]', '', x.lower()) == norm_h), None)
+                norm_h = re.sub(r"[^a-z0-9]", "", h_name.lower())
+                existing = next((x for x in all_headings if re.sub(r"[^a-z0-9]", "", x.lower()) == norm_h), None)
                 if not existing:
                     all_headings.append(h_name)
         parsed_jobs.append({"meta": d, "crit_map": crit_map})
+
+    used_labels: set = set()
+    display_map = {
+        h: resolve_display_heading(h, alias_map, apply_price_note=False, used_labels=used_labels)
+        for h in all_headings
+    }
 
     safe_folder = "".join(c if c.isalnum() or c in "-_" else "_" for c in (folder or "batch")) or "batch"
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -227,6 +246,8 @@ def export_jobs_batch(
             "folder": folder or "All Collections",
             "total_items": len(parsed_jobs),
             "dynamic_headings": all_headings,
+            "display_headings": display_map,
+            "column_aliases": alias_map,
             "jobs": [
                 {
                     "job_id": pj["meta"]["job_number"],
@@ -249,62 +270,128 @@ def export_jobs_batch(
             headers={"Content-Disposition": f'attachment; filename="cypher_label_guard_{safe_folder}_{timestamp_str}.json"'},
         )
 
-    # Generate CSV format
+    def _lookup_crit(crit_map: Dict[str, Dict[str, Any]], orig_h: str) -> Dict[str, Any]:
+        crit = crit_map.get(orig_h)
+        if not crit:
+            norm_h = re.sub(r"[^a-z0-9]", "", orig_h.lower())
+            crit = next((v for k, v in crit_map.items() if re.sub(r"[^a-z0-9]", "", k.lower()) == norm_h), {})
+        return crit or {}
+
+    if format == "pdf":
+        catalog_items: List[Dict[str, Any]] = []
+        for pj in parsed_jobs:
+            meta = pj["meta"]
+            raw_conf = meta.get("overall_criteria_confidence")
+            conf_num = float(raw_conf) if raw_conf not in (None, "") else 0.0
+            status_upper = str(meta.get("status") or "").upper()
+            if meta.get("anomaly_detected") or status_upper in ("FAILED", "REJECTED", "HUMAN_REVIEW"):
+                dec = status_upper if status_upper in ("FAILED", "REJECTED", "HUMAN_REVIEW") else "REJECTED"
+            elif conf_num >= 90.0:
+                dec = "CONFIRMED"
+            elif conf_num >= 50.0:
+                dec = "PARTIAL"
+            else:
+                dec = "HUMAN_REVIEW"
+
+            ordered_criteria = []
+            for h in all_headings:
+                crit = _lookup_crit(pj["crit_map"], h)
+                ordered_criteria.append({
+                    "name": h,
+                    "value": crit.get("value", ""),
+                    "confidence": crit.get("confidence", ""),
+                    "anomaly": crit.get("anomaly", False),
+                })
+
+            catalog_items.append({
+                "job_id": meta.get("job_number", ""),
+                "name": meta.get("name", ""),
+                "folder": meta.get("folder_name", ""),
+                "status": meta.get("status", ""),
+                "decision": dec,
+                "votes": f"{meta.get('affirmative_votes', 0)}/32",
+                "overall_confidence": meta.get("overall_criteria_confidence", ""),
+                "trace_id": meta.get("trace_id", ""),
+                "lineage_hash": meta.get("lineage_hash", ""),
+                "anomaly_detected": bool(meta.get("anomaly_detected", False)),
+                "criteria": ordered_criteria,
+            })
+
+        try:
+            pdf_bytes = build_catalog_pdf_bytes(
+                title=f"{folder or 'All Collections'} Product Catalog",
+                subtitle=f"Items: {len(catalog_items)}",
+                items=catalog_items,
+                layout=layout_val,
+                aliases=alias_map,
+                apply_price_note=False,
+            )
+        except ImportError:
+            raise HTTPException(status_code=501, detail="PDF export needs 'reportlab' (pip install reportlab).")
+
+        pdf_kind = "catalog" if layout_val == "catalog" else "table"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="cypher_label_guard_{safe_folder}_{pdf_kind}_{timestamp_str}.pdf"'},
+        )
+
     csv_rows = []
-    headers = [
-        "Job ID",
-        "Image / Asset Name",
-        "Folder / Collection",
-        "Status",
-        "Overall Confidence %",
-        "Affirmative Votes",
-        "Consensus Label",
-    ]
-    for h in all_headings:
-        headers.append(f"Heading: {h}")
-        headers.append(f"{h} (Conf %)")
-
-    headers.extend(["Created", "Trace ID", "Anomaly Detected?"])
-
-    for pj in parsed_jobs:
-        meta = pj["meta"]
-        row: Dict[str, Any] = {
-            "Job ID": meta["job_number"],
-            "Image / Asset Name": meta["name"],
-            "Folder / Collection": meta["folder_name"],
-            "Status": meta["status"],
-            "Overall Confidence %": meta["overall_criteria_confidence"],
-            "Affirmative Votes": f"{meta['affirmative_votes']}/32",
-            "Consensus Label": meta["consensus_label"],
-        }
+    if mode_val == "store":
+        headers = ["Image / Asset Name"] + [display_map[h] for h in all_headings]
+        for pj in parsed_jobs:
+            meta = pj["meta"]
+            row: Dict[str, Any] = {"Image / Asset Name": meta["name"]}
+            for h in all_headings:
+                crit = _lookup_crit(pj["crit_map"], h)
+                row[display_map[h]] = crit.get("value", "")
+            csv_rows.append(row)
+    else:
+        headers = [
+            "Job ID",
+            "Image / Asset Name",
+            "Folder / Collection",
+            "Status",
+            "Overall Confidence %",
+            "Affirmative Votes",
+            "Consensus Label",
+        ]
         for h in all_headings:
-            crit = pj["crit_map"].get(h)
-            if not crit:
-                norm_h = re.sub(r'[^a-z0-9]', '', h.lower())
-                crit = next((v for k, v in pj["crit_map"].items() if re.sub(r'[^a-z0-9]', '', k.lower()) == norm_h), {})
-            val = crit.get("value", "")
-            conf = crit.get("confidence", "")
-            row[f"Heading: {h}"] = val
-            row[f"{h} (Conf %)"] = f"{conf}%" if conf != "" else ""
+            disp_h = display_map[h]
+            headers.append(f"Heading: {disp_h}")
+            headers.append(f"{disp_h} (Conf %)")
+        headers.extend(["Created", "Trace ID", "Anomaly Detected?"])
 
-        row["Created"] = meta["created"]
-        row["Trace ID"] = meta["trace_id"]
-        row["Anomaly Detected?"] = "YES" if meta["anomaly_detected"] else "NO"
-        csv_rows.append(row)
+        for pj in parsed_jobs:
+            meta = pj["meta"]
+            row = {
+                "Job ID": meta["job_number"],
+                "Image / Asset Name": meta["name"],
+                "Folder / Collection": meta["folder_name"],
+                "Status": meta["status"],
+                "Overall Confidence %": meta["overall_criteria_confidence"],
+                "Affirmative Votes": f"{meta['affirmative_votes']}/32",
+                "Consensus Label": meta["consensus_label"],
+            }
+            for h in all_headings:
+                disp_h = display_map[h]
+                crit = _lookup_crit(pj["crit_map"], h)
+                val = crit.get("value", "")
+                conf = crit.get("confidence", "")
+                row[f"Heading: {disp_h}"] = val
+                row[f"{disp_h} (Conf %)"] = f"{conf}%" if conf != "" else ""
 
-    out = io.StringIO()
-    writer = csv.DictWriter(out, fieldnames=headers)
-    writer.writeheader()
-    sanitized_rows = [
-        {k: _sanitize_csv_cell(v) for k, v in r.items()}
-        for r in csv_rows
-    ]
-    writer.writerows(sanitized_rows)
+            row["Created"] = meta["created"]
+            row["Trace ID"] = meta["trace_id"]
+            row["Anomaly Detected?"] = "YES" if meta["anomaly_detected"] else "NO"
+            csv_rows.append(row)
 
+    csv_content = render_csv_text(headers, csv_rows)
+    csv_kind = "store" if mode_val == "store" else "audit"
     return Response(
-        content=out.getvalue(),
+        content=csv_content,
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="cypher_label_guard_{safe_folder}_{timestamp_str}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="cypher_label_guard_{safe_folder}_{csv_kind}_{timestamp_str}.csv"'},
     )
 
 

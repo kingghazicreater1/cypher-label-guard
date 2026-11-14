@@ -25,10 +25,17 @@ import {
   RefreshCw,
   FileSpreadsheet,
   DownloadCloud,
+  Image as ImageIcon,
+  UploadCloud,
+  FileText,
+  Printer,
+  Download,
+  X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useGuardian } from './context';
+import { exportJobsBatch } from './data';
 import { PageHeading, Panel, Kpi, Progress, PeriodControl, NewJobButton } from './common';
 import { JobsTable } from './jobs';
 import { ThroughputChart, CostChart } from './charts';
@@ -36,10 +43,19 @@ import {
   getKeysStatus,
   getDashboardAnalytics,
   getSampleDataset,
+  fileToResizedDataUrl,
+  downloadHistoryExport,
   type CriterionItem,
   type KeysStatusResponse,
   type DashboardAnalyticsResponse,
 } from '@/lib/api';
+import {
+  useHeadingAliases,
+  storeLocalThumbnail,
+  getLocalThumbnail,
+  openPrintablePhotoCatalog,
+} from '@/lib/label-utils';
+import { CopyableResultCard, CustomizeColumnsDialog } from './result-cards';
 
 // ----------------------------------------------------------------------------
 // 1-Click Interactive Industry Presets (Instant for Strangers & SMBs)
@@ -104,13 +120,31 @@ const SAMPLE_PRESETS: Record<
   },
 };
 
+const QUICK_PHOTO_CRITERIA: CriterionItem[] = [
+  { name: 'name of product', type: 'Free Text', range: 'Clear commercial product title' },
+  { name: 'color of main product', type: 'Free Text', range: 'Primary visible color' },
+  { name: 'estimate price', type: 'Free Text', range: 'Estimated retail price in PKR' },
+  { name: 'why you should by it ?', type: 'Free Text', range: '2-3 practical selling points' },
+  { name: 'describe in 50 words', type: 'Free Text', range: 'Ready-to-paste ~50 word store description' },
+];
+
 export function DashboardScreen() {
   const { launchJobOnBackend, latestInference, setEvidence, jobs } = useGuardian();
   const [period, setPeriod] = useState('Today');
+  const [quickMode, setQuickMode] = useState<'photo' | 'text'>('photo');
+  const [quickPhotoFile, setQuickPhotoFile] = useState<File | null>(null);
+  const [quickPhotoPreview, setQuickPhotoPreview] = useState<string | null>(null);
+  const [quickPhotoContext, setQuickPhotoContext] = useState('');
+  const [lastQuickTitle, setLastQuickTitle] = useState<string | null>(null);
+  const [lastQuickThumb, setLastQuickThumb] = useState<string | null>(null);
+  const [lastQuickJobId, setLastQuickJobId] = useState<string | null>(null);
+  const [aliases, setAliases] = useHeadingAliases();
+  const [showCustomizeCols, setShowCustomizeCols] = useState(false);
+
   const defaultPreset = SAMPLE_PRESETS['ecommerce']!;
   const [selectedPreset, setSelectedPreset] = useState<string>('ecommerce');
   const [inputText, setInputText] = useState(defaultPreset.text);
-  const [criteria, setCriteria] = useState<CriterionItem[]>(defaultPreset.criteria);
+  const [criteria, setCriteria] = useState<CriterionItem[]>(QUICK_PHOTO_CRITERIA);
   const [isVoting, setIsVoting] = useState(false);
   const [showProof, setShowProof] = useState(false);
   const [newFieldName, setNewFieldName] = useState('');
@@ -136,24 +170,84 @@ export function DashboardScreen() {
     }
   };
 
+  const handlePickQuickPhoto = async (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload a JPG, PNG, or WebP product photo.');
+      return;
+    }
+    try {
+      const dataUrl = await fileToResizedDataUrl(file, 1280, 0.85);
+      storeLocalThumbnail(file.name, dataUrl);
+      setQuickPhotoFile(file);
+      setQuickPhotoPreview(dataUrl);
+      toast.success(`Loaded photo: ${file.name}`);
+    } catch {
+      toast.error('Could not read image file. Please try another photo.');
+    }
+  };
+
+  const handleSwitchQuickMode = (mode: 'photo' | 'text') => {
+    setQuickMode(mode);
+    if (mode === 'photo' && criteria === defaultPreset.criteria) {
+      setCriteria(QUICK_PHOTO_CRITERIA);
+    } else if (mode === 'text' && criteria === QUICK_PHOTO_CRITERIA) {
+      setCriteria(SAMPLE_PRESETS[selectedPreset]?.criteria || defaultPreset.criteria);
+    }
+  };
+
   const handleRunConsensus = async () => {
+    if (quickMode === 'photo') {
+      if (!quickPhotoFile || !quickPhotoPreview) {
+        toast.error('Please drop or select a product photo first.');
+        return;
+      }
+      setIsVoting(true);
+      try {
+        toast.info(`Generating store-ready labels for "${quickPhotoFile.name}"...`);
+        const jobId = await launchJobOnBackend(
+          quickPhotoFile.name,
+          'Image',
+          quickPhotoContext.trim() || quickPhotoFile.name,
+          'Standard',
+          criteria,
+          quickPhotoPreview,
+          undefined,
+          'Quick Store Labels'
+        );
+        storeLocalThumbnail(jobId, quickPhotoPreview);
+        setLastQuickTitle(quickPhotoFile.name);
+        setLastQuickThumb(quickPhotoPreview);
+        setLastQuickJobId(jobId);
+        toast.success('Ready-to-copy product content generated & saved to History!');
+      } catch (err: any) {
+        toast.error(`Quick label error: ${err.message}`);
+      } finally {
+        setIsVoting(false);
+      }
+      return;
+    }
+
     if (!inputText.trim()) {
       toast.error('Please enter text or pick a sample above.');
       return;
     }
     setIsVoting(true);
     try {
-      toast.info('Dispatching 4-AI Parliament vote (Meta Llama, DeepSeek, Gemma, Llama Instant)...');
-      await launchJobOnBackend(
+      toast.info('Generating structured labels across 4 AI models...');
+      const jobId = await launchJobOnBackend(
         SAMPLE_PRESETS[selectedPreset]?.name || 'Studio Labeling Job',
         'Text',
         inputText,
         'Standard',
         criteria
       );
-      toast.success('4-AI Consensus Reached! Results displayed below.');
+      setLastQuickTitle(SAMPLE_PRESETS[selectedPreset]?.name || 'Text Label Result');
+      setLastQuickThumb(null);
+      setLastQuickJobId(jobId);
+      toast.success('Labels generated & saved to History!');
     } catch (err: any) {
-      toast.error(`Consensus pass error: ${err.message}`);
+      toast.error(`Labeling error: ${err.message}`);
     } finally {
       setIsVoting(false);
     }
@@ -338,87 +432,222 @@ export function DashboardScreen() {
 
       {/* Hero Interactive Studio Card */}
       <Panel
-        title="Label & Verify Studio — 1-Click Multi-Model Voting"
+        title="Quick Store Labeler — Ready-to-Copy Product Content"
         icon={<Sparkles className="text-primary" />}
         action={
-          <span className="text-xs text-muted-foreground font-mono">
-            4 AI Models Synchronized
-          </span>
+          <div className="flex items-center gap-1 rounded-lg bg-muted/60 p-0.5 border border-border">
+            <button
+              type="button"
+              onClick={() => handleSwitchQuickMode('photo')}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                quickMode === 'photo'
+                  ? 'bg-primary text-primary-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <ImageIcon size={12} />
+              Quick Photo Label
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSwitchQuickMode('text')}
+              className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                quickMode === 'text'
+                  ? 'bg-primary text-primary-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Zap size={12} />
+              Quick Text Label
+            </button>
+          </div>
         }
         className="mb-8 border-primary/25 shadow-md"
       >
         <div className="panel-body space-y-6">
-          {/* Step 1: 1-Click Preset Selector */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <label className="text-base font-semibold text-foreground flex items-center gap-2.5">
-                <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                  1
+          {quickMode === 'photo' ? (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-base font-semibold text-foreground flex items-center gap-2.5">
+                  <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                    1
+                  </span>
+                  Drop 1 Product Photo (Saved to History Automatically):
+                </label>
+                <span className="text-xs text-muted-foreground hidden sm:inline">
+                  Need 2–50 photos? Use New Job → Bulk Images
                 </span>
-                Choose an Example Preset or Paste Your Own Text:
-              </label>
-              <span className="text-xs text-muted-foreground hidden sm:inline">
-                Click any preset to load real sample data instantly:
-              </span>
-            </div>
+              </div>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5">
-              {Object.entries(SAMPLE_PRESETS).map(([k, p]) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => handleSelectPreset(k)}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    selectedPreset === k
-                      ? 'border-primary bg-primary/10 text-foreground font-semibold shadow-sm ring-1 ring-primary/30'
-                      : 'border-border bg-card/60 text-muted-foreground hover:border-primary/50 hover:bg-accent/40'
-                  }`}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
+                <label
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const f = e.dataTransfer.files?.[0];
+                    void handlePickQuickPhoto(f);
+                  }}
+                  className="md:col-span-7 relative rounded-xl border-2 border-dashed border-border hover:border-primary/60 bg-background/60 p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[156px]"
                 >
-                  <div className="text-2xl mb-1">{p.icon}</div>
-                  <div className="text-sm font-semibold truncate text-foreground">{p.name}</div>
-                  <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{p.tagline}</div>
-                </button>
-              ))}
-            </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(e) => void handlePickQuickPhoto(e.target.files?.[0])}
+                  />
+                  {quickPhotoPreview ? (
+                    <div className="flex items-center gap-4 w-full text-left">
+                      <img
+                        src={quickPhotoPreview}
+                        alt={quickPhotoFile?.name || 'Selected product'}
+                        className="w-28 h-28 rounded-lg object-contain bg-muted/40 border border-border shrink-0 p-1"
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="text-sm font-semibold text-foreground truncate">
+                          {quickPhotoFile?.name}
+                        </div>
+                        <div className="text-xs text-emerald-400 font-medium">
+                          Photo loaded · Ready for instant product copy
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <span className="text-[11px] text-muted-foreground underline">Click to replace</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setQuickPhotoFile(null);
+                              setQuickPhotoPreview(null);
+                            }}
+                            className="inline-flex items-center gap-1 text-[11px] text-rose-400 hover:text-rose-300"
+                          >
+                            <X size={11} /> Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <UploadCloud size={28} className="text-primary mb-2" />
+                      <div className="text-sm font-semibold text-foreground">
+                        Drop a single product photo here or click to browse
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        JPG, PNG, or WebP · Zero-Retention (not saved on server)
+                      </div>
+                    </>
+                  )}
+                </label>
 
-            {/* Quick Live Dataset Pulling (1,000 Retail & 500 Legal) */}
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <span className="text-xs text-muted-foreground font-medium flex items-center gap-1.5 mr-1">
-                <Database size={13} className="text-primary" />
-                Live Real Datasets:
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={isLoadingSample}
-                onClick={() => handleLoadRealDatasetItem('ecommerce')}
-                className="text-xs h-7 gap-1.5 bg-card/60 hover:bg-primary/10 hover:border-primary/50 text-foreground"
-              >
-                <FileSpreadsheet size={12} className="text-emerald-500" />
-                {isLoadingSample ? 'Pulling...' : 'Pull 1,000 Retail Products Row'}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={isLoadingSample}
-                onClick={() => handleLoadRealDatasetItem('legal')}
-                className="text-xs h-7 gap-1.5 bg-card/60 hover:bg-primary/10 hover:border-primary/50 text-foreground"
-              >
-                <FileSpreadsheet size={12} className="text-sky-500" />
-                {isLoadingSample ? 'Pulling...' : 'Pull 500 Legal Clauses Row'}
-              </Button>
+                <div className="md:col-span-5 flex flex-col justify-between gap-2 rounded-xl border border-border bg-muted/20 p-3.5">
+                  <div>
+                    <label className="text-xs font-semibold text-foreground block mb-1.5">
+                      Optional Product Hint (Brand / Notes)
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={quickPhotoContext}
+                      onChange={(e) => setQuickPhotoContext(e.target.value)}
+                      placeholder="Optional: e.g., Cotton Kurta, Made in Pakistan, Size M..."
+                      className="w-full text-xs p-2.5 rounded-lg bg-background border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none resize-none"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => setCriteria(QUICK_PHOTO_CRITERIA)}
+                    >
+                      <RotateCcw size={11} /> Store Defaults
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => setShowCustomizeCols(true)}
+                    >
+                      <Sliders size={11} /> Customize Headings
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </div>
+          ) : (
+            /* Step 1: 1-Click Preset Selector (Text Mode) */
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-base font-semibold text-foreground flex items-center gap-2.5">
+                  <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                    1
+                  </span>
+                  Choose an Example Preset or Paste Your Own Text:
+                </label>
+                <span className="text-xs text-muted-foreground hidden sm:inline">
+                  Click any preset to load real sample data instantly:
+                </span>
+              </div>
 
-            <textarea
-              rows={4}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Paste or type any product description, contract clause, review, or text payload here..."
-              className="w-full text-base font-sans p-3.5 rounded-lg bg-background border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none resize-y leading-relaxed"
-            />
-          </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3.5">
+                {Object.entries(SAMPLE_PRESETS).map(([k, p]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => handleSelectPreset(k)}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      selectedPreset === k
+                        ? 'border-primary bg-primary/10 text-foreground font-semibold shadow-sm ring-1 ring-primary/30'
+                        : 'border-border bg-card/60 text-muted-foreground hover:border-primary/50 hover:bg-accent/40'
+                    }`}
+                  >
+                    <div className="text-2xl mb-1">{p.icon}</div>
+                    <div className="text-sm font-semibold truncate text-foreground">{p.name}</div>
+                    <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{p.tagline}</div>
+                  </button>
+                ))}
+              </div>
+
+              {/* Quick Live Dataset Pulling (1,000 Retail & 500 Legal) */}
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <span className="text-xs text-muted-foreground font-medium flex items-center gap-1.5 mr-1">
+                  <Database size={13} className="text-primary" />
+                  Live Real Datasets:
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingSample}
+                  onClick={() => handleLoadRealDatasetItem('ecommerce')}
+                  className="text-xs h-7 gap-1.5 bg-card/60 hover:bg-primary/10 hover:border-primary/50 text-foreground"
+                >
+                  <FileSpreadsheet size={12} className="text-emerald-500" />
+                  {isLoadingSample ? 'Pulling...' : 'Pull 1,000 Retail Products Row'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingSample}
+                  onClick={() => handleLoadRealDatasetItem('legal')}
+                  className="text-xs h-7 gap-1.5 bg-card/60 hover:bg-primary/10 hover:border-primary/50 text-foreground"
+                >
+                  <FileSpreadsheet size={12} className="text-sky-500" />
+                  {isLoadingSample ? 'Pulling...' : 'Pull 500 Legal Clauses Row'}
+                </Button>
+              </div>
+
+              <textarea
+                rows={4}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder="Paste or type any product description, contract clause, review, or text payload here..."
+                className="w-full text-base font-sans p-3.5 rounded-lg bg-background border border-border focus:border-primary focus:ring-1 focus:ring-primary outline-none resize-y leading-relaxed"
+              />
+            </div>
+          )}
 
           {/* Step 2: Criteria Headings */}
           <div>
@@ -511,188 +740,269 @@ export function DashboardScreen() {
               onClick={handleRunConsensus}
               className="w-full h-14 text-base font-semibold shadow-lg gap-2 bg-primary hover:bg-primary/90 text-primary-foreground transition-all rounded-xl"
             >
-              <Cpu size={20} className={isVoting ? 'animate-spin' : ''} />
+              <Sparkles size={20} className={isVoting ? 'animate-spin' : ''} />
               {isVoting
-                ? 'Running 4-Model AI Parliament... (Querying Meta, DeepSeek, Gemma, Instant)'
-                : '✨ Run 4-Model AI Consensus Vote'}
+                ? (quickMode === 'photo'
+                    ? 'Generating Ready-to-Use Product Copy...'
+                    : 'Generating Verified Labels...')
+                : (quickMode === 'photo'
+                    ? '✨ Generate Ready-to-Copy Product Card (5–10s)'
+                    : '✨ Generate Verified Labels')}
             </Button>
             <p className="text-center text-xs text-muted-foreground mt-2.5">
-              Meta Llama 70B, DeepSeek R1, Google Gemma 2, and Llama Instant analyze the text simultaneously to eliminate hallucinations.
+              Returns verified store-ready fields (green = safe to paste, red = double check) and saves automatically to History.
             </p>
           </div>
         </div>
       </Panel>
 
-      {/* Live Consensus Results Card (Appears after inference or shows latest) */}
+      {/* Live Ready-to-Use Result Card */}
       {latestInference && latestInference.data?.consensus && (
-        <div className="mb-8 space-y-6 animate-in fade-in duration-300">
+        <div className="mb-8 space-y-4 animate-in fade-in duration-300">
           <Panel
-            title="Consensus Results — 4 Independent Model Ballots"
+            title="Ready-to-Use Product Content"
             icon={<CheckCircle2 className="text-success" />}
             action={
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground font-mono">Consensus Confidence:</span>
-                <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-success/15 text-success border border-success/30">
-                  ✓ {overallConfidence}%
-                </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => setShowCustomizeCols(true)}
+                >
+                  <Sliders size={12} />
+                  Customize Columns
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => {
+                    const matchedJob = lastQuickJobId ? jobs.find((j) => j.id === lastQuickJobId) : null;
+                    const singleJob = matchedJob || {
+                      id: lastQuickJobId || 'quick',
+                      name: lastQuickTitle || quickPhotoFile?.name || 'Quick Label Result',
+                      type: quickMode === 'photo' ? 'Image' : 'Text',
+                      status: 'Completed',
+                      progress: 100,
+                      labels: dynamicResults.length,
+                      cost: '$0.005',
+                      created: 'Just now',
+                      folder_name: quickMode === 'photo' ? 'Quick Store Labels' : 'General Workspace',
+                      criteria_results: dynamicResults.map((d) => ({
+                        heading: d.name,
+                        winning_label: d.value,
+                        confidence: d.confidence,
+                      })),
+                      overall_criteria_confidence: overallConfidence,
+                      trace_id: latestInference.prove_it_trace_id,
+                    };
+                    exportJobsBatch(`quick_store_${singleJob.id}`, [singleJob], 'csv', {
+                      mode: 'store',
+                      aliases,
+                    });
+                    toast.success('Downloaded clean Store CSV!');
+                  }}
+                >
+                  <Download size={12} />
+                  Store CSV
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={async () => {
+                    if (lastQuickJobId) {
+                      try {
+                        await downloadHistoryExport({
+                          jobIds: [lastQuickJobId],
+                          format: 'pdf',
+                          layout: 'catalog',
+                          aliases,
+                          fallbackName: `product_${lastQuickJobId}`,
+                        });
+                        toast.success('Downloaded Catalog PDF!');
+                        return;
+                      } catch {
+                        // Fall back seamlessly to local Photo Catalog print preview
+                      }
+                    }
+                    openPrintablePhotoCatalog(
+                      [
+                        {
+                          name: lastQuickTitle || quickPhotoFile?.name || 'Quick Label Result',
+                          folder: quickMode === 'photo' ? 'Quick Store Labels' : 'General Workspace',
+                          thumbnailUrl: getLocalThumbnail(
+                            lastQuickTitle || quickPhotoFile?.name || undefined,
+                            lastQuickThumb || undefined,
+                            lastQuickJobId || undefined
+                          ),
+                          status: 'Completed',
+                          decision: consensusDecision,
+                          overall_confidence: overallConfidence,
+                          votes: `${latestInference.data?.consensus?.affirmative_votes ?? 32}/32`,
+                          trace_id: latestInference.prove_it_trace_id,
+                          anomaly_detected: isLatestAnom,
+                          criteria: dynamicResults.map((c) => ({
+                            name: c.name,
+                            value: c.value,
+                            confidence: c.confidence,
+                            anomaly: Boolean(c.anomaly),
+                          })),
+                        },
+                      ],
+                      aliases,
+                      `${lastQuickTitle || 'Product'} — Catalog`
+                    );
+                  }}
+                >
+                  <FileText size={12} />
+                  Catalog PDF
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => {
+                    openPrintablePhotoCatalog(
+                      [
+                        {
+                          name: lastQuickTitle || quickPhotoFile?.name || 'Quick Label Result',
+                          folder: quickMode === 'photo' ? 'Quick Store Labels' : 'General Workspace',
+                          thumbnailUrl: getLocalThumbnail(
+                            lastQuickTitle || quickPhotoFile?.name || undefined,
+                            lastQuickThumb || undefined,
+                            lastQuickJobId || undefined
+                          ),
+                          status: 'Completed',
+                          decision: consensusDecision,
+                          overall_confidence: overallConfidence,
+                          votes: `${latestInference.data?.consensus?.affirmative_votes ?? 32}/32`,
+                          trace_id: latestInference.prove_it_trace_id,
+                          anomaly_detected: isLatestAnom,
+                          criteria: dynamicResults.map((c) => ({
+                            name: c.name,
+                            value: c.value,
+                            confidence: c.confidence,
+                            anomaly: Boolean(c.anomaly),
+                          })),
+                        },
+                      ],
+                      aliases,
+                      `${lastQuickTitle || 'Product'} — Photo Catalog`
+                    );
+                  }}
+                >
+                  <Printer size={12} />
+                  Photo PDF
+                </Button>
               </div>
             }
           >
-            <div className="panel-body space-y-6">
-              {/* Top Decision Banner */}
-              <div className="p-4 rounded-lg bg-success/10 border border-success/30 flex items-center justify-between flex-wrap gap-4">
-                <div>
-                  <span className="text-xs uppercase font-mono tracking-wider text-success font-bold block mb-1">
-                    Parliament Consensus Verdict
-                  </span>
-                  <div className="text-xl font-bold text-foreground flex items-center gap-2">
-                    <CheckCircle2 className="text-success" size={22} />
-                    {consensusDecision || 'CONFIRMED'}:{' '}
-                    <span className="text-primary">{consensusLabel}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Verified through Rule 19 Subspace Voting with zero hallucinations.
-                  </p>
-                </div>
-                <div className="flex gap-2">
-                  {latestInference.prove_it_trace_id && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="text-xs gap-1.5"
-                      onClick={() => setEvidence(latestInference.prove_it_trace_id!)}
-                    >
-                      <ShieldCheck size={14} className="text-primary" />
-                      Forensic Proof
-                    </Button>
-                  )}
-                  <Button asChild variant="outline" size="sm" className="text-xs">
-                    <Link to="/parliament">View 32-Seat Orbit →</Link>
-                  </Button>
-                </div>
-              </div>
+            <div className="panel-body space-y-4">
+              <CopyableResultCard
+                title={lastQuickTitle || quickPhotoFile?.name || SAMPLE_PRESETS[selectedPreset]?.name || 'Labeled Item'}
+                subtitle={quickMode === 'photo' ? 'Saved to History · Quick Store Labels' : 'Saved to History'}
+                thumbnailUrl={lastQuickThumb}
+                secondaryThumbKey={lastQuickJobId || undefined}
+                status={isLatestAnom ? 'FAILED' : 'COMPLETED'}
+                decision={consensusDecision}
+                overallConfidence={overallConfidence}
+                votes={`${latestInference.data?.consensus?.affirmative_votes ?? 32}/32`}
+                traceId={latestInference.prove_it_trace_id}
+                anomalyDetected={isLatestAnom}
+                criteria={dynamicResults}
+                aliases={aliases}
+              />
 
-              {/* The 4 AI Models Council Cards */}
-              <div>
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-2">
-                  <Cpu size={14} className="text-primary" />
-                  Independent Votes from 4 AI Architectures:
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {[0, 1, 2, 3].map((seatIdx) => {
-                    const tile = latestInference.parliament_grid ? latestInference.parliament_grid[seatIdx * 8] : null;
-                    const modelName = tile?.api ? tile.api.replace(/_/g, ' ').toUpperCase() : `Seat #${seatIdx + 1}`;
-                    const dim = tile?.dimension || 'Category Consensus';
-                    const vote = tile?.vote || consensusLabel;
-                    const conf = tile?.confidence ? `${Math.round(tile.confidence * 100)}%` : `${overallConfidence}%`;
-                    const lat = tile?.latency_ms ? `${tile.latency_ms}ms` : (latestInference.summary?.latency_ms ? `${latestInference.summary.latency_ms}ms` : '—');
-                    const avatars = ['🏛️', '⚡', '🧠', '💎'];
-
-                    return (
-                      <div
-                        key={seatIdx}
-                        className="p-4 rounded-xl border border-border bg-card/70 flex flex-col justify-between shadow-sm hover:border-primary/40 transition-all"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-xl">{avatars[seatIdx]}</span>
-                            <span className="px-2 py-0.5 rounded text-xs font-mono bg-muted text-muted-foreground uppercase font-semibold">
-                              Seat #{seatIdx + 1}
-                            </span>
-                          </div>
-                          <b className="text-base font-semibold text-foreground block truncate">
-                            {modelName}
-                          </b>
-                          <span className="text-xs text-muted-foreground block truncate mb-2.5">
-                            {dim}
-                          </span>
-                          <div className="p-2.5 rounded-lg bg-background border border-border/80 font-mono text-sm font-semibold text-primary">
-                            Vote: {vote}
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between mt-3 text-xs text-muted-foreground pt-2.5 border-t border-border/60">
-                          <span>Confidence: <b className="text-success">{conf}</b></span>
-                          <span className="font-mono">{lat}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Dynamic Headings Results Table */}
-              {dynamicResults.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-2">
-                    <Sliders size={14} className="text-primary" />
-                    Labeled Output for Your Headings:
-                  </h4>
-                  <div className="table-scroll">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Heading</th>
-                          <th>Type</th>
-                          <th>Consensus Output</th>
-                          <th>Confidence Score</th>
-                          <th>Model Agreement</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dynamicResults.map((item, idx) => (
-                          <tr key={idx}>
-                            <td className="font-semibold text-foreground">{item.name}</td>
-                            <td>
-                              <span className="px-2 py-0.5 rounded text-xs font-mono bg-primary/10 text-primary border border-primary/20">
-                                {item.type}
-                              </span>
-                            </td>
-                            <td className="font-mono text-sm font-bold text-primary">
-                              {String(item.value)}
-                            </td>
-                            <td>
-                              <div className="flex items-center gap-2 font-mono text-xs">
-                                <span className="text-success font-semibold">{item.confidence}%</span>
-                              </div>
-                            </td>
-                            <td className="text-xs text-muted-foreground">
-                              {item.agreement || 'Unanimous 4-Model Concordance'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {/* Collapsible Cryptographic Proof Toggle */}
+              {/* Collapsible Technical Verification & Forensic Ledger */}
               <div className="pt-2 border-t border-border">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowProof(!showProof)}
-                  className="text-xs text-muted-foreground gap-1.5"
-                >
-                  <LockKeyhole size={13} className="text-success" />
-                  {showProof ? 'Hide Cryptographic Forensic Proof' : 'View Cryptographic Forensic Proof (SHA-256 Ledger)'}
-                  {showProof ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                </Button>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowProof(!showProof)}
+                    className="text-xs text-muted-foreground gap-1.5"
+                  >
+                    <LockKeyhole size={13} className="text-success" />
+                    {showProof
+                      ? 'Hide AI Model Ballots & Cryptographic Proof'
+                      : `View AI Verification & Forensic Proof (${overallConfidence}% confidence · ${consensusDecision})`}
+                    {showProof ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    {latestInference.prove_it_trace_id && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => setEvidence(latestInference.prove_it_trace_id!)}
+                      >
+                        <ShieldCheck size={13} className="text-primary" />
+                        Forensic Proof
+                      </Button>
+                    )}
+                    <Button asChild variant="outline" size="sm" className="h-7 text-xs">
+                      <Link to="/parliament">View 32-Seat Orbit →</Link>
+                    </Button>
+                  </div>
+                </div>
 
                 {showProof && (
-                  <div className="mt-3 p-4 rounded-lg bg-background border border-border font-mono text-xs space-y-2 text-muted-foreground">
-                    <div className="flex justify-between items-center text-foreground font-semibold">
-                      <span>Trace ID: {latestInference.prove_it_trace_id || '9b119882...'}</span>
-                      <span className="text-success font-normal">Cryptographically Signed</span>
+                  <div className="mt-3 space-y-4">
+                    <div className="p-3 rounded-lg bg-muted/20 border border-border flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="text-[11px] uppercase font-mono text-primary font-bold">
+                          Consensus Verdict: {consensusDecision || 'CONFIRMED'} ({consensusLabel})
+                        </span>
+                        <div className="text-xs text-muted-foreground font-mono mt-0.5">
+                          Trace ID: {latestInference.prove_it_trace_id || '9b119882...'} · Zero-Retention Verified
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded text-xs font-mono font-bold bg-success/15 text-success border border-success/30">
+                        ✓ {overallConfidence}%
+                      </span>
                     </div>
-                    <div>
-                      Lineage Hash: <code className="text-primary">SHA256:7f3a9b2c4d8e6f019a2b5c7d3e8f6a01...</code>
-                    </div>
-                    <div>
-                      Subspace Voting: 32 individual dimensional projections evaluated across 4 model parameter spaces.
-                    </div>
-                    <div>
-                      Zero-Retention Memory Map: Purged from volatile memory upon consensus commitment.
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {[0, 1, 2, 3].map((seatIdx) => {
+                        const tile = latestInference.parliament_grid ? latestInference.parliament_grid[seatIdx * 8] : null;
+                        const modelName = tile?.api ? tile.api.replace(/_/g, ' ').toUpperCase() : `Seat #${seatIdx + 1}`;
+                        const dim = tile?.dimension || 'Category Consensus';
+                        const vote = tile?.vote || consensusLabel;
+                        const conf = tile?.confidence ? `${Math.round(tile.confidence * 100)}%` : `${overallConfidence}%`;
+                        const lat = tile?.latency_ms ? `${tile.latency_ms}ms` : (latestInference.summary?.latency_ms ? `${latestInference.summary.latency_ms}ms` : '—');
+                        const avatars = ['🏛️', '⚡', '🧠', '💎'];
+
+                        return (
+                          <div
+                            key={seatIdx}
+                            className="p-3.5 rounded-xl border border-border bg-card/70 flex flex-col justify-between shadow-xs"
+                          >
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-lg">{avatars[seatIdx]}</span>
+                                <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-muted text-muted-foreground uppercase font-semibold">
+                                  Seat #{seatIdx + 1}
+                                </span>
+                              </div>
+                              <b className="text-sm font-semibold text-foreground block truncate">{modelName}</b>
+                              <span className="text-[11px] text-muted-foreground block truncate mb-2">{dim}</span>
+                              <div className="p-2 rounded bg-background border border-border/80 font-mono text-xs font-semibold text-primary">
+                                Vote: {vote}
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between mt-2.5 text-[11px] text-muted-foreground pt-2 border-t border-border/60">
+                              <span>Confidence: <b className="text-success">{conf}</b></span>
+                              <span className="font-mono">{lat}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -724,6 +1034,18 @@ export function DashboardScreen() {
         <LockKeyhole size={12} className="text-success" />
         Zero-retention privacy active. Every consensus decision backed by immutable token attribution evidence.
       </p>
+      <CustomizeColumnsDialog
+        open={showCustomizeCols}
+        onClose={() => setShowCustomizeCols(false)}
+        headings={Array.from(
+          new Set([
+            ...criteria.map((c) => c.name),
+            ...dynamicResults.map((c: any) => String(c.name || '')),
+          ].filter(Boolean))
+        )}
+        aliases={aliases}
+        onSave={setAliases}
+      />
     </>
   );
 }

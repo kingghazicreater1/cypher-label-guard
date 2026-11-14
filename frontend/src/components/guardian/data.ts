@@ -1,3 +1,5 @@
+import { getDisplayHeading, type HeadingAliasMap } from '../../lib/label-utils';
+
 export type ImageAnnotation = {
   label: string;
   confidence: number;
@@ -74,7 +76,12 @@ export function exportFile(name: string, data: unknown, csv = false) {
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url);
 }
 
-export function exportJobsBatch(name: string, jobsList: Job[], format: 'csv' | 'json' = 'csv') {
+export function exportJobsBatch(
+  name: string,
+  jobsList: Job[],
+  format: 'csv' | 'json' = 'csv',
+  opts: { mode?: 'audit' | 'store'; aliases?: HeadingAliasMap } = {}
+) {
   if (!jobsList || jobsList.length === 0) return;
 
   if (format === 'json') {
@@ -105,18 +112,26 @@ export function exportJobsBatch(name: string, jobsList: Job[], format: 'csv' | '
     });
   });
 
-  const headers = [
-    'Job ID',
-    'Image / Asset Name',
-    'Collection / Folder',
-    'Status',
-    'Overall Confidence %',
-    'Consensus Label',
-    ...allHeadings.flatMap(h => [`Heading: ${h}`, `${h} (Conf %)`]),
-    'Created',
-    'Trace ID',
-    'Anomaly Detected?',
-  ];
+  const displayFor = (h: string) => getDisplayHeading(h, opts.aliases);
+  const isStoreMode = opts.mode === 'store';
+
+  const headers = isStoreMode
+    ? ['Image / Asset Name', ...allHeadings.map(displayFor)]
+    : [
+        'Job ID',
+        'Image / Asset Name',
+        'Collection / Folder',
+        'Status',
+        'Overall Confidence %',
+        'Consensus Label',
+        ...allHeadings.flatMap(h => {
+          const disp = displayFor(h);
+          return [`Heading: ${disp}`, `${disp} (Conf %)`];
+        }),
+        'Created',
+        'Trace ID',
+        'Anomaly Detected?',
+      ];
 
   const rows = jobsList.map(j => {
     const critMap: Record<string, { value: string; conf: any }> = {};
@@ -130,24 +145,26 @@ export function exportJobsBatch(name: string, jobsList: Job[], format: 'csv' | '
       }
     });
 
-    const values = [
-      j.id,
-      j.name,
-      j.folder_name || 'General Workspace',
-      j.status,
-      j.overall_criteria_confidence ?? '',
-      j.consensus_label || '',
-      ...allHeadings.flatMap(h => {
-        const item = critMap[h];
-        return [
-          item ? item.value : '',
-          item && item.conf !== '' ? `${item.conf}%` : '',
+    const values = isStoreMode
+      ? [j.name, ...allHeadings.map(h => (critMap[h] ? critMap[h].value : ''))]
+      : [
+          j.id,
+          j.name,
+          j.folder_name || 'General Workspace',
+          j.status,
+          j.overall_criteria_confidence ?? '',
+          j.consensus_label || '',
+          ...allHeadings.flatMap(h => {
+            const item = critMap[h];
+            return [
+              item ? item.value : '',
+              item && item.conf !== '' ? `${item.conf}%` : '',
+            ];
+          }),
+          j.created,
+          j.trace_id || '',
+          j.anomaly_detected ? 'YES' : 'NO',
         ];
-      }),
-      j.created,
-      j.trace_id || '',
-      j.anomaly_detected ? 'YES' : 'NO',
-    ];
 
     return values.map(sanitizeCsvCell).join(',');
   });

@@ -285,5 +285,138 @@ class TestCriteriaConcordanceFairness(unittest.TestCase):
         self.assertNotEqual(self.feat_cls._canonicalize_short_label("Yes", "Boolean"), "no")
 
 
+class TestCatalogExportAndAliases(unittest.TestCase):
+    def _sample_state(self):
+        return {
+            "batch_id": "b_store",
+            "user_id": None,
+            "name": "Winter Collection",
+            "folder_name": "E-Commerce",
+            "depth_tier": "Standard",
+            "status": "COMPLETED",
+            "total": 2,
+            "failed": 0,
+            "credits_charged": 10,
+            "elapsed_seconds": 4.2,
+            "criteria": [
+                {"name": "name of product"},
+                {"name": "estimate price"},
+                {"name": "why you should by it ?"},
+            ],
+            "items": [
+                {
+                    "name": "dress_maroon.jpg",
+                    "status": "COMPLETED",
+                    "decision": "CONFIRMED",
+                    "votes": "32/32",
+                    "overall_confidence": 96.0,
+                    "lineage_hash": "lin_1",
+                    "trace_id": "trc_1",
+                    "criteria_results": [
+                        {"name": "name of product", "value": "Maroon Velvet Dress", "confidence": 96.0},
+                        {"name": "estimate price", "value": "PKR 4,500", "confidence": 92.0},
+                        {
+                            "name": "why you should by it ?",
+                            "value": "Rich seasonal velvet fabric with traditional embroidery, ready for festive occasions and winter wear.",
+                            "confidence": 94.0,
+                        },
+                    ],
+                },
+                {
+                    "name": "perfume_oud.jpg",
+                    "status": "COMPLETED",
+                    "decision": "PARTIAL",
+                    "votes": "22/32",
+                    "overall_confidence": 74.0,
+                    "lineage_hash": "lin_2",
+                    "trace_id": "trc_2",
+                    "criteria_results": [
+                        {"name": "name of product", "value": "Royal Oud EDP 100ml", "confidence": 82.0},
+                        {"name": "estimate price", "value": "PKR 2,800", "confidence": 68.0},
+                        {"name": "why you should by it ?", "value": "Long-lasting woody fragrance.", "confidence": 72.0},
+                    ],
+                },
+            ],
+        }
+
+    def test_store_csv_applies_aliases_and_strips_audit_columns(self):
+        aliases = json.dumps({
+            "name of product": "Product Title",
+            "estimate price": "Price (PKR)",
+            "why you should by it ?": "Selling Point",
+        })
+        with patch.dict(bir.IMAGE_BATCH_REGISTRY, {"b_store": self._sample_state()}):
+            resp = asyncio.run(
+                bir.image_batch_report("b_store", "csv", None, mode="store", aliases=aliases)
+            )
+        text = resp.body.decode("utf-8")
+        first_line = text.splitlines()[0]
+        self.assertEqual(first_line, "Photo,Product Title,Price (PKR),Selling Point")
+        self.assertNotIn("Votes", text)
+        self.assertNotIn("Lineage_Hash", text)
+        self.assertIn("Maroon Velvet Dress", text)
+
+    def test_catalog_pdf_creates_one_page_per_product(self):
+        aliases = json.dumps({"name of product": "Product Title", "estimate price": "Price (PKR)"})
+        with patch.dict(bir.IMAGE_BATCH_REGISTRY, {"b_store": self._sample_state()}):
+            resp = asyncio.run(
+                bir.image_batch_report("b_store", "pdf", None, layout="catalog", aliases=aliases)
+            )
+        self.assertTrue(resp.body.startswith(b"%PDF"))
+        # 2 items -> ReportLab root /Pages /Count 2
+        self.assertIn(b"/Count 2", resp.body)
+
+    def test_history_export_supports_store_csv_and_catalog_pdf(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from db.database import Base
+        from db.models import User, JobRecord
+        from api.history_routes import export_jobs_batch
+
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(bind=engine)
+        SessionLocal = sessionmaker(bind=engine)
+        db = SessionLocal()
+        try:
+            u = User(id="u_store", email="store@example.com", hashed_password="x", role="User")
+            db.add(u)
+            for idx, (fname, title) in enumerate([("bag.jpg", "Leather Tote Bag"), ("watch.jpg", "Chronograph Watch")], start=1):
+                db.add(JobRecord(
+                    id=f"id_{idx}",
+                    user_id="u_store",
+                    job_number=f"JOB-{idx}",
+                    name=fname,
+                    modality="VISION",
+                    status="COMPLETED",
+                    consensus_label=title,
+                    affirmative_votes=30,
+                    folder_name="Shop",
+                    trace_id=f"trc_{idx}",
+                    criteria_json=json.dumps([
+                        {"heading": "name of product", "winning_label": title, "confidence": 95.0},
+                        {"heading": "estimate price", "winning_label": "PKR 3,200", "confidence": 91.0},
+                    ]),
+                ))
+            db.commit()
+
+            mock_user = SimpleNamespace(id="u_store", role="User")
+            aliases = json.dumps({"name of product": "Product Title", "estimate price": "Price (PKR)"})
+            csv_resp = export_jobs_batch(
+                folder="Shop", job_ids=None, format="csv", user=mock_user, db=db, mode="store", aliases=aliases
+            )
+            csv_lines = csv_resp.body.decode("utf-8").splitlines()
+            self.assertEqual(csv_lines[0], "Image / Asset Name,Product Title,Price (PKR)")
+            self.assertIn("Leather Tote Bag", csv_resp.body.decode("utf-8"))
+
+            pdf_resp = export_jobs_batch(
+                folder="Shop", job_ids=None, format="pdf", user=mock_user, db=db, layout="catalog", aliases=aliases
+            )
+            self.assertTrue(pdf_resp.body.startswith(b"%PDF"))
+            self.assertIn(b"/Count 2", pdf_resp.body)
+        finally:
+            db.close()
+            engine.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()

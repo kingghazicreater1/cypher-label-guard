@@ -886,16 +886,95 @@ export async function getImageBatchStatus(batchId: string): Promise<ImageBatchSt
   return res.json();
 }
 
-export async function downloadImageBatchReport(batchId: string, format: "csv" | "json" | "pdf"): Promise<void> {
-  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/images/report/${batchId}?format=${format}`);
+export interface ExportReportOptions {
+  mode?: "audit" | "store" | undefined;
+  layout?: "catalog" | "table" | undefined;
+  aliases?: Record<string, string> | undefined;
+}
+
+function buildReportQueryString(
+  base: Record<string, string | undefined>,
+  aliases?: Record<string, string>
+): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(base)) {
+    if (v !== undefined && v !== "") sp.set(k, v);
+  }
+  if (aliases) {
+    const clean = Object.fromEntries(
+      Object.entries(aliases).filter(([k, v]) => k.trim() && v.trim())
+    );
+    if (Object.keys(clean).length > 0) {
+      sp.set("aliases", JSON.stringify(clean));
+    }
+  }
+  return sp.toString();
+}
+
+function extractDownloadFilename(res: Response, fallback: string): string {
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = /filename="?([^";]+)"?/i.exec(cd);
+  return m?.[1] ? m[1] : fallback;
+}
+
+export async function downloadImageBatchReport(
+  batchId: string,
+  format: "csv" | "json" | "pdf",
+  opts: ExportReportOptions = {}
+): Promise<void> {
+  const qs = buildReportQueryString(
+    {
+      format,
+      mode: opts.mode || "audit",
+      layout: opts.layout || "catalog",
+    },
+    opts.aliases
+  );
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/batch/images/report/${batchId}?${qs}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Report download failed" }));
     throw new ApiHttpError(typeof err.detail === "string" ? err.detail : "Report download failed", res.status);
   }
   const blob = await res.blob();
+  const suffix = format === "pdf" ? (opts.layout === "table" ? "audit" : "catalog") : (opts.mode === "store" ? "store" : "audit");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `batch_audit_${batchId}.${format}`;
+  a.download = extractDownloadFilename(res, `batch_${suffix}_${batchId}.${format}`);
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+export async function downloadHistoryExport(params: {
+  folder?: string | undefined;
+  jobIds?: string[] | undefined;
+  format: "csv" | "json" | "pdf";
+  mode?: "audit" | "store" | undefined;
+  layout?: "catalog" | "table" | undefined;
+  aliases?: Record<string, string> | undefined;
+  fallbackName?: string | undefined;
+}): Promise<void> {
+  const qs = buildReportQueryString(
+    {
+      folder: params.folder && params.folder !== "All" ? params.folder : undefined,
+      job_ids: params.jobIds && params.jobIds.length > 0 ? params.jobIds.join(",") : undefined,
+      format: params.format,
+      mode: params.mode || "audit",
+      layout: params.layout || "catalog",
+    },
+    params.aliases
+  );
+  const res = await fetchWithAuthRetry(`${API_BASE_URL}/api/v2/history/export?${qs}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "History export failed" }));
+    throw new ApiHttpError(typeof err.detail === "string" ? err.detail : "History export failed", res.status);
+  }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = extractDownloadFilename(
+    res,
+    `${params.fallbackName || "cypher_label_guard"}_${params.mode || params.layout || "export"}.${params.format}`
+  );
   a.click();
   URL.revokeObjectURL(a.href);
 }
