@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import os
@@ -419,61 +420,66 @@ class VisionConnectorFeature(BaseFeature):
                 raw_reply = ""
                 used_model = "vision"
 
-                # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable)
+                # 1. Primary: Google Gemini Direct API (Zero-Cost, Ultra-Reliable with Stale-Socket Retry)
                 if gemini_key and raw_b64_str:
                     preferred_g = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
-                    g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
-                    # Deduplicate and bound attempts so retries + secondary fit inside Standard 75s budget
+                    g_models = [preferred_g, "gemini-flash-lite-latest", "gemini-flash-latest"]
                     seen_g = set()
-                    g_models = [m for m in g_models if m and not (m in seen_g or seen_g.add(m))][:3]
+                    g_models = [m for m in g_models if m and not (m in seen_g or seen_g.add(m))][:2]
                     for g_model_name in g_models:
-                        try:
-                            g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model_name}:generateContent"
-                            g_headers = {"x-goog-api-key": gemini_key, "Content-Type": "application/json"}
-                            g_payload = {
-                                "contents": [
-                                    {
-                                        "parts": [
-                                            {"text": v_prompt},
-                                            {"inline_data": {"mime_type": img_mime, "data": raw_b64_str}},
-                                        ]
-                                    }
-                                ],
-                                "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
-                            }
-                            g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=20.0)
-                            vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
-                            if g_resp.status_code == 200:
-                                g_data = g_resp.json()
-                                raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                                clean_json = raw_reply
-                                if "```json" in clean_json:
-                                    clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
-                                elif "```" in clean_json:
-                                    clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
-                                if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
-                                    clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
-                                parsed = json.loads(clean_json)
-                                used_model = g_model_name
-                                break
-                        except Exception as g_err:
-                            vision_error_note = f"{g_model_name}: {type(g_err).__name__} {str(g_err)[:80]}"
-                            _log.warning("Gemini vision model %s failed, trying next: %s", g_model_name, vision_error_note)
+                        if parsed:
+                            break
+                        for attempt_idx in range(2):
+                            try:
+                                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model_name}:generateContent"
+                                g_headers = {"x-goog-api-key": gemini_key, "Content-Type": "application/json"}
+                                if attempt_idx > 0:
+                                    # Force a brand-new TCP socket if the pooled keep-alive connection was closed by upstream
+                                    g_headers["Connection"] = "close"
+                                g_payload = {
+                                    "contents": [
+                                        {
+                                            "parts": [
+                                                {"text": v_prompt},
+                                                {"inline_data": {"mime_type": img_mime, "data": raw_b64_str}},
+                                            ]
+                                        }
+                                    ],
+                                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"},
+                                }
+                                g_resp = await client.post(g_url, headers=g_headers, json=g_payload, timeout=22.0)
+                                vision_error_note = f"{g_model_name}: HTTP {g_resp.status_code}"
+                                if g_resp.status_code == 200:
+                                    g_data = g_resp.json()
+                                    raw_reply = g_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                    clean_json = raw_reply
+                                    if "```json" in clean_json:
+                                        clean_json = clean_json.split("```json", 1)[1].split("```", 1)[0].strip()
+                                    elif "```" in clean_json:
+                                        clean_json = clean_json.split("```", 1)[1].split("```", 1)[0].strip()
+                                    if "{" in clean_json and "}" in clean_json and not clean_json.startswith("{"):
+                                        clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}") + 1]
+                                    parsed = json.loads(clean_json)
+                                    used_model = g_model_name
+                                    break
+                                if g_resp.status_code == 404:
+                                    break
+                                if attempt_idx == 0:
+                                    await asyncio.sleep(0.4)
+                            except Exception as g_err:
+                                vision_error_note = f"{g_model_name} (attempt {attempt_idx + 1}): {type(g_err).__name__} {str(g_err)[:80]}"
+                                _log.warning("Gemini vision model %s attempt %d failed: %s", g_model_name, attempt_idx + 1, vision_error_note)
+                                if attempt_idx == 0:
+                                    await asyncio.sleep(0.4)
 
-                # 2. Secondary: Groq Multimodal Vision (Llama-4-Scout) or OpenRouter or OpenAI
+                # 2. Secondary: OpenRouter (gemma-4-31b-it:free) or OpenAI
                 if not parsed and img_url_to_send:
                     sec_candidates = []
-                    if groq_key:
-                        sec_candidates.append((
-                            "https://api.groq.com/openai/v1/chat/completions",
-                            {"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
-                            "meta-llama/llama-4-scout-17b-16e-instruct",
-                        ))
                     if openrouter_key:
                         sec_candidates.append((
                             "https://openrouter.ai/api/v1/chat/completions",
                             {"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
-                            "google/gemma-3-27b-it:free",
+                            "google/gemma-4-31b-it:free",
                         ))
                     if openai_key:
                         sec_candidates.append((

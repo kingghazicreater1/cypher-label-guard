@@ -1571,22 +1571,53 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                                 parsed = self._clean_and_parse_json(reasoning)
                             return p_name, p_model, parsed
                         elif r.status_code == 429:
-                            logger.warning(f"OpenRouter rate limit (429) hit for {p_model}. Provider slot released.")
+                            # Fallback to secondary OpenRouter free model when primary hits rate limit
+                            alt_or_model = "google/gemma-4-31b-it:free" if "gemma-4" not in p_model else "qwen/qwen3-32b:free"
+                            logger.warning(f"OpenRouter rate limit (429) hit for {p_model}, trying backup {alt_or_model}...")
+                            await asyncio.sleep(0.5)
+                            alt_payload = {
+                                "model": alt_or_model,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "temperature": 0.0,
+                                "max_tokens": 2000,
+                            }
+                            r_alt = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=alt_payload, timeout=22.0)
+                            if r_alt.status_code == 200:
+                                msg_obj = r_alt.json()["choices"][0]["message"]
+                                content = msg_obj.get("content") or ""
+                                reasoning = msg_obj.get("reasoning") or ""
+                                parsed = self._clean_and_parse_json(content)
+                                if not parsed and reasoning:
+                                    parsed = self._clean_and_parse_json(reasoning)
+                                return p_name, alt_or_model, parsed
                             return p_name, p_model, None
                         logger.warning(f"OpenRouter criteria query ({p_model}) returned HTTP {r.status_code}")
                         return p_name, p_model, None
 
                     elif p_name == "gemini":
-                        headers = {"x-goog-api-key": p_key, "Content-Type": "application/json"}
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{p_model}:generateContent"
                         payload = {
                             "contents": [{"parts": [{"text": prompt}]}],
                             "generationConfig": {"temperature": 0.0}
                         }
-                        r = await client.post(url, headers=headers, json=payload, timeout=25.0)
-                        if r.status_code == 200:
-                            content = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                            return p_name, p_model, content
+                        for g_try in range(2):
+                            try:
+                                headers = {"x-goog-api-key": p_key, "Content-Type": "application/json"}
+                                if g_try > 0:
+                                    headers["Connection"] = "close"
+                                r = await client.post(url, headers=headers, json=payload, timeout=25.0)
+                                if r.status_code == 200:
+                                    content = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                                    return p_name, p_model, content
+                                if g_try == 0 and r.status_code >= 500:
+                                    await asyncio.sleep(0.4)
+                                    continue
+                                break
+                            except Exception:
+                                if g_try == 0:
+                                    await asyncio.sleep(0.4)
+                                    continue
+                                raise
                         return p_name, p_model, None
 
                     elif p_name == "openai":
@@ -2394,8 +2425,15 @@ Return ONLY valid JSON. No markdown code blocks, no other text."""
                         "anomaly_reason": "Specimen not verified" if is_anom else None,
                     })
                 else:
-                    # Honest missing extraction report: models did not extract this heading from document
-                    fallback_val = "Not specified in document" if c_type == "Free Text" else ("No" if c_type == "Boolean" else "Not specified")
+                    # Honest missing extraction report: models did not extract this heading
+                    if c_type == "Boolean":
+                        fallback_val = "No"
+                    elif has_visual_metadata and c_intent != "PRICE":
+                        fallback_val = "Unable to determine from image"
+                    elif c_type == "Free Text":
+                        fallback_val = "Not specified in document"
+                    else:
+                        fallback_val = "Not specified"
                     final_results.append({
                         "name": name,
                         "type": c_type,

@@ -3641,20 +3641,31 @@ function VisionLabeledImageStudio({
                     });
 
                     const hasAnom =
+                      isAnomaly ||
                       effectiveCriteria.some(
                         (c) =>
-                          String(c.value).includes('REJECTED_CONTAINER_SIGNATURE') ||
+                          Boolean(c.anomaly) ||
+                          Number(c.confidence) === 0 ||
+                          String(c.value).includes('REJECT') ||
                           String(c.value).toLowerCase().includes('ftyp')
                       ) ||
                       Boolean((job as any).anomaly_detected && String((job as any).consensus_label).includes('REJECT'));
 
+                    const isContainerEcho = effectiveCriteria.some(
+                      (c) =>
+                        String(c.value).includes('REJECTED_CONTAINER_SIGNATURE') ||
+                        String(c.value).toLowerCase().includes('ftyp')
+                    );
+
                     const anomalyReason =
                       effectiveCriteria.find((c) => c.anomaly || c.anomaly_reason)?.anomaly_reason ||
-                      'Container header signature, context echo, or modality mismatch detected. Output suppressed by zero-trust guard.';
+                      'Inspection failed on one or more criteria headings (0.0% confidence). Output flagged for manual review.';
 
                     if (hasAnom) {
-                      const alertTitle = 'ZERO TOLERANCE TRIGGERED';
-                      const alertHeading = 'FAILED INSPECTION · CONTAINER HEADER / CONTEXT ECHO DETECTED';
+                      const alertTitle = isContainerEcho ? 'ZERO TOLERANCE TRIGGERED' : 'INSPECTION FAILED';
+                      const alertHeading = isContainerEcho
+                        ? 'FAILED INSPECTION · CONTAINER HEADER / CONTEXT ECHO DETECTED'
+                        : 'FAILED INSPECTION · ONE OR MORE HEADINGS REJECTED (0% CONFIDENCE)';
                       const badgeText = 'REJECTED QA';
 
                       return (
@@ -3699,6 +3710,29 @@ function VisionLabeledImageStudio({
                       );
                     }
 
+                    if (isDiscordantQA || hasQuorumShortfall) {
+                      return (
+                        <div className="mt-4 p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] uppercase font-mono font-bold text-amber-500 block">
+                              Factory Quality Control Advisory
+                            </span>
+                            <p className="text-xs text-foreground font-semibold">
+                              {hasQuorumShortfall
+                                ? 'HUMAN REVIEW REQUIRED · MINIMUM 3-API QUORUM NOT MET'
+                                : 'PASS WITH QA NOTES · PARTIAL HEADING CONCORDANCE'}
+                            </p>
+                            <p className="text-[10px] text-muted-foreground font-mono">
+                              Audited by CypherLabelGuard Multi-Model Parliamentary Consensus ({activeModelSummary})
+                            </p>
+                          </div>
+                          <div className="px-3 py-1.5 rounded-lg border-2 border-dashed border-amber-500 text-amber-500 font-mono font-black text-xs uppercase tracking-wider transform -rotate-3 shadow-sm">
+                            {hasQuorumShortfall ? 'HUMAN REVIEW' : 'QA NOTES'}
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <div className="mt-4 p-3.5 rounded-lg bg-success/5 border border-success/30 flex items-center justify-between">
                         <div className="space-y-0.5">
@@ -3709,7 +3743,7 @@ function VisionLabeledImageStudio({
                             PASSED INSPECTION · ZERO ANOMALY DETECTED
                           </p>
                           <p className="text-[10px] text-muted-foreground font-mono">
-                            Audited by CypherLabelGuard 4-AI Parliamentary Consensus (Universal BYOK)
+                            Audited by CypherLabelGuard Multi-Model Parliamentary Consensus ({activeModelSummary})
                           </p>
                         </div>
                         <div className="px-3 py-1.5 rounded-lg border-2 border-dashed border-success text-success font-mono font-black text-xs uppercase tracking-wider transform -rotate-3 shadow-sm">
@@ -4227,15 +4261,6 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
           })
           : [];
 
-  const hasAnomaly =
-    Boolean(job.anomaly_detected && String(job.consensus_label).includes('REJECT')) ||
-    job.status === 'Failed' ||
-    dynamicResults.some(
-      (c) =>
-        String(c.value).includes('REJECTED_CONTAINER_SIGNATURE') ||
-        String(c.value).toLowerCase().includes('ftyp')
-    );
-
   const rawOverallConf =
     batchStatus?.overall_confidence !== undefined
       ? batchStatus.overall_confidence
@@ -4248,6 +4273,18 @@ export function JobDetailScreen({ jobId }: { jobId: string }) {
             : 0);
 
   const overallConfidence = dynamicResults.length === 0 ? 0 : rawOverallConf;
+
+  const hasAnomaly =
+    Boolean(job.anomaly_detected && String(job.consensus_label).includes('REJECT')) ||
+    job.status === 'Failed' ||
+    (dynamicResults.length > 0 && Number(overallConfidence) === 0) ||
+    dynamicResults.some(
+      (c) =>
+        Boolean(c.anomaly) ||
+        Number(c.confidence) === 0 ||
+        String(c.value).includes('REJECT') ||
+        String(c.value).toLowerCase().includes('ftyp')
+    );
 
   const isBatchJob = jobId.startsWith('batch_') || job.type === 'CSV Batch';
   const isImageJob = job.type === 'Image' || Boolean(job.imageUrl);
